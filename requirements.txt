@@ -1,0 +1,9 @@
+transformers
+torch
+numpy<2.0
+pillow
+albumentations
+pycocotools
+scikit-learn
+
+#python 3.12
