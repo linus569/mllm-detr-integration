@@ -1,4 +1,4 @@
-from dataset import build_dataloader
+from dataset.dataset import build_dataloader
 
 # TODO: replace with config
 TRAIN_DATA_DIR = "data/coco/images/train2017"

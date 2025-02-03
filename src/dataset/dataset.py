@@ -7,7 +7,7 @@ from PIL import Image
 from pycocotools.coco import COCO
 from torch.utils.data import DataLoader, Dataset
 
-from processor import Processor
+from dataset.processor import Processor
 from transformers import AutoTokenizer
 
 
@@ -84,7 +84,7 @@ def build_dataloader(image_dir, annotations_file, batch_size, model):
 
 # test implementation of dataset, processor, and integration with model
 if __name__ == "__main__":
-    from model import VisionLanguageModel
+    from model.model import VisionLanguageModel
 
     train_data_dir = "data/coco/images/train2017"
     train_annotation_file = "data/coco/annotations/instances_train2017.json"

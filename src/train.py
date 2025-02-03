@@ -1,20 +1,29 @@
 import torch
-from model import VisionLanguageModel
+from model.model import VisionLanguageModel
 from torch.optim import AdamW
+from tqdm import tqdm
 from transformers import get_scheduler
 from utils.train_utils import build_train_dataloader
 
+
 MODEL_NAME = "lmms-lab/llava-onevision-qwen2-0.5b-si"
-TRAIN_DATA_DIR = "data/coco/images/train2017"
-TRAIN_ANNOTATIONS_DIR = "data/coco/annotations/instances_train2017.json"
+TRAIN_DATA_DIR = "../data/coco/images/train2017"
+TRAIN_ANNOTATIONS_DIR = "../data/coco/annotations/instances_train2017.json"
 
 
 def train_model(model, dataloader, optimizer, scheduler, device, num_epochs=5):
     model.train()
 
+    print("Training model...")
+
+    # add tqdm
+    dataloader = tqdm(dataloader)
+
     for epoch in range(num_epochs):
         total_loss = 0
         for batch in dataloader:
+            dataloader.set_description(f"Epoch {epoch+1}/{num_epochs}")
+            
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
             images = batch["images"].to(device)
@@ -64,6 +73,8 @@ def train_model(model, dataloader, optimizer, scheduler, device, num_epochs=5):
             scheduler.step()
 
             total_loss += loss.item()
+
+            dataloader.set_postfix({"loss": total_loss / len(dataloader)})
 
         print(f"Epoch {epoch+1}/{num_epochs}, Loss: {total_loss/len(dataloader)}")
 
