@@ -1,47 +1,108 @@
+import json
+import numpy as np
 import torch
+from PIL import Image
+from typing import Dict, List, Union
 from transformers import AutoTokenizer
 
 
 class Processor:
-    def __init__(self, model_name):
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+    def __init__(self, model):
+        """
+        Initialize the processor with a tokenizer.
+
+        Args:
+            tokenizer: HuggingFace tokenizer for text processing
+        """
+        self.model = model
+        self.tokenizer = model.tokenizer
         self.image_token = "<image>"
-        self.tokenizer.add_special_tokens(
-            {"additional_special_tokens": [self.image_token]}
-        )
 
-    def prepare_text(self, captions, instance_classes, instance_bboxes):
-        # concat captions and class names with special tokens
-        text = (
-            " ".join(captions)
-            + " "
-            + " ".join(self.image_token for _ in range(577))
-            + " "
-            + " ".join(
-                [
-                    f"<class_{cls}> <bbox_{bbox}>"
-                    for cls, bbox in zip(instance_classes, instance_bboxes)
-                ]
-            )
-        )
-        return text
+    def prepare_text_input(
+        self,
+        num_patches: int,
+        instance_classes: List[str],
+        instance_bboxes: List[List[float]],
+        captions: Union[str, List[str]],
+    ) -> str:
+        """
+        Prepare the input text string by combining image tokens and metadata.
 
-    def __call__(self, batch):
-        images = [item["image"] for item in batch]
-        texts = [
-            self.prepare_text(
-                item["captions"], item["instance_classes"], item["instance_bboxes"]
-            )
-            for item in batch
+        Args:
+            num_patches: Number of image patches to include
+            instance_classes: List of class names for each instance
+            instance_bboxes: List of bounding boxes [x1, y1, x2, y2]
+            captions: Image caption(s)
+        """
+        # Add image tokens based on number of patches
+        image_tokens = f" {self.image_token} " * num_patches
+
+        # Combine bboxes and classes into a list of instances
+        # TODO: change bbox to special token instead of json
+        instances = []
+        for cls, bbox in zip(instance_classes, instance_bboxes):
+            instances.append({"class": cls.tolist(), "bbox": bbox.tolist()})
+        bbox_str = json.dumps(instances)
+
+        # Handle both single string and list of captions
+        if isinstance(captions, list):
+            caption_text = " ".join(captions)
+        else:
+            caption_text = captions
+
+        # Combine all elements with proper spacing
+        combined_text = (
+            f"{image_tokens} " f"Objects: {bbox_str} " f"Caption: {caption_text}"
+        ).strip()
+
+        return combined_text
+
+    def process_batch(self, batch: List[Dict]) -> Dict[str, torch.Tensor]:
+        """
+        Process a batch of dictionaries to create model inputs.
+
+        Args:
+            batch: List of dictionaries containing:
+                - 'image': PIL.Image
+                - 'instance_classes': List[str]
+                - 'instance_bboxes': List[List[float]]
+                - 'captions': str or List[str]
+
+        Returns:
+            Dictionary with:
+                - 'input_ids': padded token sequences
+                - 'attention_mask': attention mask
+                - 'pixel_values': stacked image tensors
+        """
+        # Get number of tokens of image encoder
+        num_tokens = self.model.vision_tower.vision_model.embeddings.position_embedding.weight.shape[
+            0
         ]
 
-        # tokenize texts
+        # Prepare text inputs
+        text_inputs = [
+            self.prepare_text_input(
+                num_tokens,
+                sample["instance_classes"],
+                sample["instance_bboxes"],
+                sample["captions"],
+            )
+            for sample in batch
+        ]
+
+        # Tokenize texts
         tokenized = self.tokenizer(
-            texts, padding=True, truncation=True, return_tensors="pt"
+            text_inputs,
+            padding=True,
+            truncation=True,
+            # max_length=self.max_length,
+            return_tensors="pt",
         )
 
-        # stack images
-        images = torch.stack(images)
+        # Stack images
+        images = torch.stack(
+            [torch.from_numpy(np.array(sample["image"])) for sample in batch]
+        )
 
         return {
             "input_ids": tokenized["input_ids"],
@@ -49,11 +110,14 @@ class Processor:
             "images": images,
         }
 
+    def collate_fn(self, batch: List[Dict]) -> Dict[str, torch.Tensor]:
+        """
+        Collate function to be used with PyTorch DataLoader.
 
-from dataset import train_dataset
-from torch.utils.data import DataLoader
+        Args:
+            samples: List of batch dictionaries
 
-processor = Processor(model_name="lmms-lab/llava-onevision-qwen2-0.5b-si")
-dataloader = DataLoader(train_dataset, batch_size=8, collate_fn=processor)
-
-# print(next(iter(dataloader)))
+        Returns:
+            Processed batch dictionary
+        """
+        return self.process_batch(batch)
