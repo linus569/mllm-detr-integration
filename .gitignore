@@ -1,4 +1,7 @@
 data/coco/
+.examples/
+.wip/
+checkpoints
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
