@@ -8,7 +8,21 @@ from pycocotools.coco import COCO
 from torch.utils.data import DataLoader, Dataset
 
 from dataset.processor import Processor
-from transformers import AutoTokenizer
+
+from transformers.image_transforms import (
+    convert_to_rgb,
+    normalize,
+    rescale,
+    resize,
+    to_channel_dimension_format,
+)
+
+from transformers.image_utils import (
+    ChannelDimension,
+    PILImageResampling,
+    to_numpy_array,
+)
+from functools import partial
 
 
 class COCODataset(Dataset):
@@ -39,6 +53,28 @@ class COCODataset(Dataset):
 
         # apply transformations
         if self.transform:
+
+            image_mean = (0.5, 0.5, 0.5)
+            image_std = (0.5, 0.5, 0.5)
+            size = (384, 384)
+            resample = PILImageResampling.BICUBIC
+            rescale_factor = 1 / 255
+            data_format = ChannelDimension.LAST  # .FIRST
+
+            transforms = [
+                convert_to_rgb,
+                to_numpy_array,
+                # partial(resize, size=size, resample=resample, data_format=data_format),
+                partial(rescale, scale=rescale_factor, data_format=data_format),
+                partial(
+                    normalize, mean=image_mean, std=image_std, data_format=data_format
+                ),
+                # partial(to_channel_dimension_format, channel_dim=data_format, input_channel_dim=data_format),
+            ]
+
+            for transform in transforms:
+                image = transform(image)
+
             transformed = self.transform(
                 image=np.array(image),
                 bboxes=instance_bboxes,
@@ -59,15 +95,16 @@ class COCODataset(Dataset):
 TRANSFORMATIONS = A.Compose(
     [
         A.Resize(384, 384),  # 336,336
-        A.HorizontalFlip(p=0.5),
-        A.RandomBrightnessContrast(p=0.2),
+        # A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
+        # A.HorizontalFlip(p=0.5),
+        # A.RandomBrightnessContrast(p=0.2),
         ToTensorV2(),
     ],
     bbox_params=A.BboxParams(format="pascal_voc", label_fields=["class_labels"]),
 )
 
 
-def build_dataloader(image_dir, annotations_file, batch_size, model):
+def build_dataloader(image_dir, annotations_file, batch_size, model, train):
     # TODO: load transforms from config
     transform = TRANSFORMATIONS
 
@@ -75,52 +112,8 @@ def build_dataloader(image_dir, annotations_file, batch_size, model):
         image_dir=image_dir, annotation_file=annotations_file, transform=transform
     )
 
-    processor = Processor(model)
+    processor = Processor(model, train=train)
 
     return DataLoader(
         dataset=dataset, batch_size=batch_size, collate_fn=processor.collate_fn
     )
-
-
-# test implementation of dataset, processor, and integration with model
-if __name__ == "__main__":
-    from model.model import VisionLanguageModel
-
-    train_data_dir = "data/coco/images/train2017"
-    train_annotation_file = "data/coco/annotations/instances_train2017.json"
-    model_name = "lmms-lab/llava-onevision-qwen2-0.5b-si"
-
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-
-    model = VisionLanguageModel(model_name)
-    print(model)
-
-    # print number of image-tokens when forward in vision tower
-    print(
-        "vision_tower output shape:",
-        model.vision_tower.forward(torch.randn(1, 3, 384, 384)).last_hidden_state.shape,
-    )
-    print(
-        "num_image_token of vision_tower:",
-        model.vision_tower.vision_model.embeddings.position_embedding.weight.shape[0],
-    )
-
-    dataloader = build_dataloader(
-        image_dir=train_data_dir,
-        annotations_file=train_annotation_file,
-        batch_size=1,
-        model=model,
-    )
-
-    batch = next(iter(dataloader))
-    images = batch["images"]
-    input_ids = batch["input_ids"]
-    att_mask = batch["attention_mask"]
-
-    encoded_images = model.vision_tower.forward(images)
-    print("encoded_images last_hidden_state:", encoded_images.last_hidden_state.shape)
-    print("encoded_images pooler_output:", encoded_images.pooler_output.shape)
-
-    model_output = model(input_ids=input_ids, attention_mask=att_mask, images=images)
-
-    print(model_output)
