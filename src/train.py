@@ -239,7 +239,7 @@ print(f"Using device: {device}")
 model = VisionLanguageModel(model_name=MODEL_NAME).to(device)
 
 # Create dataloader
-train_dataloader = build_train_dataloader(model, batch_size=10, num_samples=100)
+train_dataloader = build_train_dataloader(model, batch_size=4, num_samples=100)
 val_dataloader = build_val_dataloader(model, batch_size=4, num_samples=20)
 
 # Freeze all layers except projection layer and new token embeddings
