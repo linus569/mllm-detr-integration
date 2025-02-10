@@ -275,7 +275,7 @@ for param in model.parameters():
 for param in model.projector.parameters():
     param.requires_grad = True
 
-trainable_params = [{"params": model.projector.parameters}] #, "lr": 1e-4}]
+trainable_params = [{"params": model.projector.parameters()}] #, "lr": 1e-4}]
 
 optimizer = AdamW(trainable_params, lr=5e-5)
 
