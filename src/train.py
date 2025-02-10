@@ -98,7 +98,7 @@ class Trainer:
             # Forward pass
             self.optimizer.zero_grad()
 
-            with autocast(device_type=self.device):
+            with autocast(device_type=self.device.type):
                 outputs = self.model(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
