@@ -5,5 +5,12 @@ pillow
 albumentations
 pycocotools
 scikit-learn
+accelerate
+torchvision
+torchmetrics
+git+https://github.com/LLaVA-VL/LLaVA-NeXT.git
+einops
+wandb
 
+#flash-attn
 #python 3.12
