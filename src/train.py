@@ -263,8 +263,9 @@ print(f"Using device: {device}")
 model = VisionLanguageModel(model_name=MODEL_NAME).to(device)
 
 # Create dataloader
-train_dataloader = build_train_dataloader(model, batch_size=2, num_samples=100)
-val_dataloader = build_val_dataloader(model, batch_size=2, num_samples=20)
+train_dataloader = build_train_dataloader(model, batch_size=2) #, num_samples=100)
+val_dataloader = build_val_dataloader(model, batch_size=2) #, num_samples=20)
+epochs = 2
 
 # Freeze all layers except projection layer and new token embeddings
 for param in model.parameters():
@@ -274,12 +275,11 @@ for param in model.parameters():
 for param in model.projector.parameters():
     param.requires_grad = True
 
-trainable_params = [{"params": model.projector.parameters(), "lr": 1e-4}]
-
+trainable_params = [{"params": model.projector.parameters}] #, "lr": 1e-4}]
 
 optimizer = AdamW(trainable_params, lr=5e-5)
 
-num_training_steps = len(train_dataloader) * 5
+num_training_steps = len(train_dataloader) * epochs
 scheduler = get_scheduler(
     "cosine",
     optimizer=optimizer,
