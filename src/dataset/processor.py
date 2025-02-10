@@ -167,11 +167,16 @@ class Processor:
         # Convert loss masks back to PyTorch tensors
         loss_masks = torch.tensor(loss_masks, dtype=torch.float32)
 
+        instance_bboxes = [sample["instance_bboxes"] for sample in batch]
+        instance_classes_id = [sample["instance_classes_id"] for sample in batch]
+
         return {
             "input_ids": tokenized["input_ids"],
             "attention_mask": tokenized["attention_mask"],
             "images": images,
             "loss_masks": loss_masks,
+            "instance_bboxes": instance_bboxes,
+            "instance_classes_id": instance_classes_id,
         }
 
     def collate_fn(self, batch: List[Dict]) -> Dict[str, torch.Tensor]:
