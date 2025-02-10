@@ -1,14 +1,29 @@
+import torch
 import torch.nn.functional as F
 
 
 # currently same as in transformers.loss.loss_utils
 def masked_cross_entropy(
-    logits,
-    labels,
+    logits: torch.Tensor,
+    labels: torch.Tensor,
     vocab_size: int,
     num_items_in_batch: int = None,
     ignore_index: int = -100,
 ):
+    """
+    Compute cross-entropy loss while ignoring padding tokens.
+
+    Args:
+        logits: Logits from the model
+        labels: Target labels
+        vocab_size: Size of the vocabulary
+        num_items_in_batch: Number of items in the batch
+        ignore_index: Index to ignore
+
+    Returns:
+        The computed loss
+    """
+
     # upcast to float to avoid precision issues
     logits = logits.float()
     labels = labels.to(logits.device)

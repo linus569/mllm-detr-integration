@@ -1,5 +1,6 @@
+import json
 import torch
-from model.masked_loss import masked_cross_entropy
+from model.loss import masked_cross_entropy
 from transformers import AutoTokenizer
 from llava.model.language_model.llava_qwen import LlavaQwenForCausalLM
 
@@ -24,7 +25,9 @@ class VisionLanguageModel(torch.nn.Module):
         self.projector = self.model.get_model().mm_projector
         print("Model initialized")
 
-    def forward(self, input_ids, attention_mask, images, labels=None):
+    def forward(
+        self, input_ids, attention_mask, images, labels=None
+    ):
         # Image feature extraction
         image_features = self.image_encoder(images)
         image_features = image_features.to(dtype=torch.float32)
@@ -75,14 +78,13 @@ class VisionLanguageModel(torch.nn.Module):
         attention_mask,
         image,
         max_new_tokens=2048,
-        num_beams=3,
-        temperature=0.7,
-        do_sample=True,
+        stopping_criteria=None,
+        **kwargs
     ):
         assert (
             image.dim() == 4
         ), "Image should be of shape [batch_size, channels, height, width]"
-        assert image.shape[0] == 1, "Only single image supported"
+        #assert image.shape[0] == 1, "Only single image supported"
         assert image.dtype == torch.float32, "Image should be of type float32"
 
         # Image feature extraction
@@ -120,6 +122,8 @@ class VisionLanguageModel(torch.nn.Module):
             inputs_embeds=inputs_embeds,
             max_new_tokens=max_new_tokens,
             attention_mask=attention_mask,
+            stopping_criteria=stopping_criteria,
+            **kwargs,
         )
 
         return outputs
