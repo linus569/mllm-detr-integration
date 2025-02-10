@@ -18,6 +18,7 @@ TEST_ANNOTATIONS_DIR = "data/coco/annotations/image_info_test2017.json"
 TEST_BATCH_SIZE = 1
 
 server = "/u/home/salzmann/Documents/dev/master-thesis/"
+#server = ""
 
 TRAIN_DATA_DIR = server + "data/coco/images/train2017"
 TRAIN_ANNOTATIONS_DIR = server + "data/coco/annotations/instances_train2017.json"
@@ -119,7 +120,7 @@ def parse_model_output_to_boxes(text, dataset, index, device):
                 # Convert bbox to tensor
                 bbox = pred.get("bbox", [])
                 if len(bbox) == 4:
-                    pred_boxes.append(torch.tensor(bbox, dtype=torch.float32))
+                    pred_boxes.append(torch.tensor(bbox, dtype=torch.float32).to(device))
                     
                     # Convert class name to index
                     class_name = pred.get("class", "")
@@ -141,8 +142,8 @@ def parse_model_output_to_boxes(text, dataset, index, device):
      # Create return tensors with proper types
     return {
         "boxes": bbox,
-        "labels": torch.tensor(pred_labels, dtype=torch.long) if pred_labels else torch.zeros(0, dtype=torch.long),
-        "scores": torch.tensor(pred_scores, dtype=torch.float32) if pred_scores else torch.zeros(0)
+        "labels": torch.tensor(pred_labels, dtype=torch.long, device=device) if pred_labels else torch.zeros(0, dtype=torch.long).to(device),
+        "scores": torch.tensor(pred_scores, dtype=torch.float32, device=device) if pred_scores else torch.zeros(0).to(device)
     }
 
 def unnormalize_bbox(bbox: torch.Tensor, width: int, height: int) -> torch.Tensor:

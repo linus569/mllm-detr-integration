@@ -15,7 +15,8 @@ from utils.train_utils import (
     JSONStoppingCriteria,
 )
 from torchmetrics.detection.mean_ap import MeanAveragePrecision
-from torch.cuda.amp import GradScaler, autocast
+from torch import autocast
+from torch.cuda.amp import GradScaler
 
 
 MODEL_NAME = "lmms-lab/llava-onevision-qwen2-0.5b-si"
@@ -97,7 +98,7 @@ class Trainer:
             # Forward pass
             self.optimizer.zero_grad()
 
-            with autocast():
+            with autocast(device_type=self.device):
                 outputs = self.model(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
