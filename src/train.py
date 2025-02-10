@@ -271,6 +271,7 @@ trainer = Trainer(
     optimizer=optimizer,
     scheduler=scheduler,
     device=device,
+    checkpoint_dir="/u/home/salzmann/Documents/dev/checkpoints"
     #gradient_accumulation_steps=4,
     #max_grad_norm=1.0
 )

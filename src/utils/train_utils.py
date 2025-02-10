@@ -17,6 +17,15 @@ TEST_DATA_DIR = "data/coco/images/test2017"
 TEST_ANNOTATIONS_DIR = "data/coco/annotations/image_info_test2017.json"
 TEST_BATCH_SIZE = 1
 
+server = "/u/home/salzmann/Documents/dev/master-thesis/"
+
+TRAIN_DATA_DIR = server + "data/coco/images/train2017"
+TRAIN_ANNOTATIONS_DIR = server + "data/coco/annotations/instances_train2017.json"
+VAL_DATA_DIR = server + "data/coco/images/val2017"
+VAL_ANNOTATIONS_DIR = server + "data/coco/annotations/instances_val2017.json"
+TEST_DATA_DIR = server + "data/coco/images/test2017"
+TEST_ANNOTATIONS_DIR = server + "data/coco/annotations/image_info_test2017.json"
+
 
 def build_train_dataloader(model, batch_size=TRAIN_BATCH_SIZE, num_samples=None):
     return build_dataloader(
