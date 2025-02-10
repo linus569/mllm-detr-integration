@@ -18,7 +18,7 @@
  
 # Load python module
 ml python/anaconda3
- 
+conda init 
 # kann auch außerhalb des Skripts gesetzt werden
 
 # Activate corresponding environment
@@ -26,8 +26,9 @@ ml python/anaconda3
 conda deactivate
  
 # If the following does not work, try 'source activate <env-name>'
-conda activate vlm-detection
- 
+#conda activate vlm-detection
+source activate vlm-detection
+
 # Cache data to local /tmp directory (optional)
 #rsync -r /vol/aimspace/projects/<dataset> /tmp
  

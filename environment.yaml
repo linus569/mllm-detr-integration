@@ -1,0 +1,35 @@
+name: vlm-detection
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.12
+  - pip
+  - pylint
+  - IPython
+  - ipykernel
+  - jupyter
+
+  - numpy<2.0
+  - pytorch
+  - torchvision
+  - torchmetrics
+  - pytorch-cuda
+  - einops
+  - matplotlib
+  - pandas
+  - tqdm
+  - wandb
+
+  - pip:
+    - transformers
+    - pillow
+    - hydra-core
+    - albumentations
+    - pycocotools
+    - scikit-learn
+    - accelerate
+    - git+https://github.com/LLaVA-VL/LLaVA-NeXT.git
