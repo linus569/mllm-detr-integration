@@ -1,37 +1,28 @@
+import logging
 import os
 import time
+
+import hydra
 import numpy as np
 import torch
-import wandb
-from model.model import VisionLanguageModel
+from hydra.core.config_store import ConfigStore
+from omegaconf import DictConfig, OmegaConf
+from torch import autocast
+from torch.cuda.amp import GradScaler
 from torch.optim import AdamW
+from torchmetrics.detection.mean_ap import MeanAveragePrecision
 from tqdm import tqdm
 from transformers import get_scheduler
+
+import wandb
+from model.model import VisionLanguageModel
 from utils.train_utils import (
+    ExperimentConfig,
+    JSONStoppingCriteria,
     build_train_dataloader,
     build_val_dataloader,
     parse_model_output_to_boxes,
     unnormalize_bbox,
-    JSONStoppingCriteria,
-)
-from torchmetrics.detection.mean_ap import MeanAveragePrecision
-from torch import autocast
-from torch.cuda.amp import GradScaler
-
-
-MODEL_NAME = "lmms-lab/llava-onevision-qwen2-0.5b-si"
-
-# start a new wandb run to track this script
-wandb.init(
-    # set the wandb project where this run will be logged
-    project="object-dection-vlm",
-    # track hyperparameters and run metadata
-    # config={
-    # "learning_rate": 0.02,
-    # "architecture": "CNN",
-    # "dataset": "CIFAR-100",
-    # "epochs": 10,
-    # }
 )
 
 
@@ -39,25 +30,21 @@ class Trainer:
     def __init__(
         self,
         model,
-        train_dataloader,
-        val_dataloader,
-        optimizer,
-        scheduler,
+        config,
         device,
-        gradient_accumulation_steps=4,
-        max_grad_norm=None,  # 1.0,
-        checkpoint_dir="checkpoints",
     ):
         self.model = model
-        self.train_dataloader = train_dataloader
-        self.val_dataloader = val_dataloader
-        self.optimizer = optimizer
-        self.scheduler = scheduler
+        self.config = config
         self.device = device
-        self.checkpoint_dir = checkpoint_dir
 
-        self.gradient_accumulation_steps = gradient_accumulation_steps
-        self.max_grad_norm = max_grad_norm
+        self.train_dataloader = None
+        self.val_dataloader = None
+        self.optimizer = None
+        self.scheduler = None
+
+        self.checkpoint_dir = config.checkpoint_dir
+        self.gradient_accumulation_steps = config.train.gradient_accumulation_steps
+        self.max_grad_norm = config.train.max_grad_norm
 
         # Initialize metric once
         self.metric = MeanAveragePrecision(box_format="xyxy", iou_type="bbox").to(
@@ -67,7 +54,7 @@ class Trainer:
         # Mixed precision
         self.scaler = GradScaler()
 
-        os.makedirs(checkpoint_dir, exist_ok=True)
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
 
     def train_epoch(self, epoch, num_epochs):
         self.model.train()
@@ -96,9 +83,31 @@ class Trainer:
             labels[loss_masks == 0] = -100  # Mask everything except the answer tokens
 
             # Forward pass
-            self.optimizer.zero_grad()
+            if self.device == "cuda":
+                with autocast(device_type=self.device.type):
+                    outputs = self.model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        images=images,
+                        labels=labels,
+                    )
+                    loss = outputs.loss / self.gradient_accumulation_steps
 
-            with autocast(device_type=self.device.type):
+                self.scaler.scale(loss).backward()
+
+                if (step + 1) % self.gradient_accumulation_steps == 0:
+                    # unscale gradients
+                    if self.max_grad_norm is not None:  # grad_clip_norm
+                        self.scaler.unscale_(self.optimizer)
+                        torch.nn.utils.clip_grad_norm_(
+                            self.model.parameters(), self.max_grad_norm
+                        )
+
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                    self.scheduler.step()
+                    self.optimizer.zero_grad()
+            else:
                 outputs = self.model(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
@@ -107,18 +116,8 @@ class Trainer:
                 )
                 loss = outputs.loss / self.gradient_accumulation_steps
 
-            self.scaler.scale(loss).backward()
-
-            if (step + 1) % self.gradient_accumulation_steps == 0:
-                # unscale gradients
-                if self.max_grad_norm is not None:  # grad_clip_norm
-                    self.scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(
-                        model.parameters(), self.max_grad_norm
-                    )
-
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
+                loss.backward()
+                self.optimizer.step()
                 self.scheduler.step()
                 self.optimizer.zero_grad()
 
@@ -169,7 +168,7 @@ class Trainer:
             # Parse model ouput to bbox and lables
             predicted_boxes = [
                 parse_model_output_to_boxes(
-                    generated_text, self.val_dataloader.dataset, i, device
+                    generated_text, self.val_dataloader.dataset, i, self.device
                 )
                 for i in range(len(batch["instance_bboxes"]))
             ]
@@ -177,8 +176,8 @@ class Trainer:
             target_boxes = [
                 {
                     # TODO: get height and width from config
-                    "boxes": unnormalize_bbox(boxes.to(device), 384, 384),
-                    "labels": labels.to(device),
+                    "boxes": unnormalize_bbox(boxes.to(self.device), 384, 384),
+                    "labels": labels.to(self.device),
                 }
                 for boxes, labels in zip(
                     batch["instance_bboxes"], batch["instance_classes_id"]
@@ -226,8 +225,50 @@ class Trainer:
         for checkpoint in checkpoints[:-keep_last_n]:
             os.remove(os.path.join(self.checkpoint_dir, checkpoint))
 
-    def train(self, num_epochs=5):
+    def lazy_init_training_objects(self):
+        # Create dataloader
+        self.train_dataloader = build_train_dataloader(
+            self.model,
+            batch_size=self.config.train.batch_size,
+            num_samples=self.config.train.num_samples,
+        )
+        self.val_dataloader = build_val_dataloader(
+            self.model, batch_size=2, num_samples=2
+        )
+        epochs = self.config.train.epochs
+
+        # Freeze all layers except projection layer and new token embeddings
+        for param in self.model.parameters():
+            param.requires_grad = False
+
+        # Unfreeze projection layer
+        for param in self.model.projector.parameters():
+            param.requires_grad = True
+
+        trainable_params = [{"params": self.model.projector.parameters()}]
+        self.optimizer = AdamW(trainable_params, lr=self.config.train.lr)
+
+        num_training_steps = len(self.train_dataloader) * epochs
+        self.scheduler = get_scheduler(
+            "cosine",
+            optimizer=self.optimizer,
+            num_warmup_steps=num_training_steps * self.config.train.warmup_ratio,
+            num_training_steps=num_training_steps,
+        )
+
+    def train(self, num_epochs=None):
+        if (
+            self.train_dataloader == None
+            or self.val_dataloader == None
+            or self.optimizer == None
+            or self.scheduler == None
+        ):
+            self.lazy_init_training_objects()
+
         best_map = 0
+
+        if num_epochs == None:
+            num_epochs = self.config.train.epochs
 
         for epoch in range(num_epochs):
             # Training loop
@@ -255,50 +296,46 @@ class Trainer:
             print(f"Epoch {epoch+1}/{num_epochs}, Loss: {train_loss}")
 
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-# device = torch.device("cuda")
-# device = torch.device("mps" if torch.backends.mps.is_available() else device)
-print(f"Using device: {device}")
+@hydra.main(config_path="../conf", config_name="train", version_base=None)
+def run_training(config: ExperimentConfig):
+    print(OmegaConf.to_yaml(config))
 
-model = VisionLanguageModel(model_name=MODEL_NAME).to(device)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
 
-# Create dataloader
-train_dataloader = build_train_dataloader(model, batch_size=2) #, num_samples=100)
-val_dataloader = build_val_dataloader(model, batch_size=2) #, num_samples=20)
-epochs = 2
+    model = VisionLanguageModel(model_name=config.model_name).to(device)
 
-# Freeze all layers except projection layer and new token embeddings
-for param in model.parameters():
-    param.requires_grad = False
+    # Init wandb
+    wandb.init(
+        # set the wandb project where this run will be logged
+        project="object-dection-vlm",
+        # track hyperparameters and run metadata
+        config=OmegaConf.to_container(config, resolve=True, throw_on_missing=False),
+        mode="disabled" if config.debug else "online",
+    )
 
-# Unfreeze projection layer
-for param in model.projector.parameters():
-    param.requires_grad = True
+    # Initialize trainer
+    trainer = Trainer(
+        model=model,
+        config=config,
+        device=device,
+    )
 
-trainable_params = [{"params": model.projector.parameters()}] #, "lr": 1e-4}]
+    # Train model
+    trainer.train()
 
-optimizer = AdamW(trainable_params, lr=5e-5)
 
-num_training_steps = len(train_dataloader) * epochs
-scheduler = get_scheduler(
-    "cosine",
-    optimizer=optimizer,
-    num_warmup_steps=num_training_steps * 0.1,
-    num_training_steps=num_training_steps,
-)
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    cs = ConfigStore.instance()
+    cs.store(name="ExperimentConfig", node=ExperimentConfig)
+    # cs.store(name="DatasetConfig", group="dataset", node=DatasetConfig)
+    # OmegaConf.register_new_resolver("models_dir", lambda: MODELS_DIR)
+    # OmegaConf.register_new_resolver("ifel", lambda flag, val_true, val_false: val_true if flag else val_false)
+    # OmegaConf.register_new_resolver("project_dir", lambda: PROJECT_DIR)
 
-# Initialize trainer
-trainer = Trainer(
-    model=model,
-    train_dataloader=train_dataloader,
-    val_dataloader=val_dataloader,
-    optimizer=optimizer,
-    scheduler=scheduler,
-    device=device,
-    checkpoint_dir="/u/home/salzmann/Documents/dev/checkpoints",
-    gradient_accumulation_steps=4,
-    # max_grad_norm=1.0
-)
+    # import model
+    # from model import img_encoder, txt_encoder, txt_decoder, detector
+    # ModelRegistry.init_registries([model, img_encoder, txt_encoder, txt_decoder, detector])
 
-# Train model
-trainer.train(num_epochs=10)
+    run_training()

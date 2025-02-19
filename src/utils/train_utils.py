@@ -1,24 +1,21 @@
+from dataclasses import dataclass, field
+import dataclasses
+from omegaconf import MISSING, OmegaConf
+from typing import Any, Callable, Dict, Generic, Iterable, List, Mapping, Optional, Sequence, Collection, TypeVar, Union
 import json
 import re
+from typing import List, Optional
 import torch
 from dataset.dataset import build_dataloader
 from transformers import StoppingCriteria
 
 # TODO: replace with config
-TRAIN_DATA_DIR = "data/coco/images/train2017"
-TRAIN_ANNOTATIONS_DIR = "data/coco/annotations/instances_train2017.json"
 TRAIN_BATCH_SIZE = 1
-
-VAL_DATA_DIR = "data/coco/images/val2017"
-VAL_ANNOTATIONS_DIR = "data/coco/annotations/instances_val2017.json"
 VAL_BATCH_SIZE = 1
-
-TEST_DATA_DIR = "data/coco/images/test2017"
-TEST_ANNOTATIONS_DIR = "data/coco/annotations/image_info_test2017.json"
 TEST_BATCH_SIZE = 1
 
 server = "/u/home/salzmann/Documents/dev/master-thesis/"
-#server = ""
+server = ""
 
 TRAIN_DATA_DIR = server + "data/coco/images/train2017"
 TRAIN_ANNOTATIONS_DIR = server + "data/coco/annotations/instances_train2017.json"
@@ -26,6 +23,70 @@ VAL_DATA_DIR = server + "data/coco/images/val2017"
 VAL_ANNOTATIONS_DIR = server + "data/coco/annotations/instances_val2017.json"
 TEST_DATA_DIR = server + "data/coco/images/test2017"
 TEST_ANNOTATIONS_DIR = server + "data/coco/annotations/image_info_test2017.json"
+
+@dataclass
+class TrainConfig:
+    batch_size: int = 1
+    num_samples: Optional[int] = None
+    epochs: int = 10
+    lr: float = 5e-5
+    warmup_ratio: float = 0.1
+    gradient_accumulation_steps: int = 4
+    max_grad_norm: Optional[float] = None
+
+
+@dataclass
+class ExperimentConfig:
+    train: TrainConfig = field(default_factory=TrainConfig)
+    model_name: str = 'lmms-lab/llava-onevision-qwen2-0.5b-si'
+    evaluate: bool = True
+    eval_mode: str = 'val'
+    device: str = 'cuda'
+    checkpoint_dir: str = 'checkpoints'
+    debug: bool = False
+
+# @dataclass
+# class ExperimentConfig:
+#     name: str = MISSING
+#     seed: int = MISSING
+
+#     model: Any = MISSING
+
+#     continue_from_checkpoint: Optional[str] = None
+#     load_modules_from_checkpoint: Optional[List[str]] = None
+
+#     #train_dataset: Dict[str, DatasetConfig] = field(default_factory=dict)
+#     val_tasks: Dict[str, Any] = field(default_factory=dict)  # Dict[str, EvalConfig]
+#     #transform: TransformConfig = MISSING
+#     train: bool = True
+#     evaluate: bool = True
+#     eval_mode: str = 'val'
+#     eval_tasks: Dict[str, Any] = field(default_factory=dict)
+
+#     batch_size: int = MISSING
+#     max_steps: Optional[int] = None
+#     max_epochs: Optional[int] = None
+#     lr: float = MISSING
+#     min_lr: float = MISSING
+#     warmup_lr: Optional[float] = MISSING
+#     warmup_steps: int = MISSING
+#     weight_decay: float = MISSING
+#     accumulation_steps: int = MISSING
+#     grad_clip_norm: Optional[float] = MISSING
+#     early_stopping_patience: Optional[int] = None
+
+#     metric: Optional[str] = None
+#     metric_mode: str = 'max'
+
+#     val_freq: Optional[int] = None
+#     val_ep: Optional[int] = None
+#     print_freq: int = MISSING
+#     num_workers: int = MISSING
+#     device: str = MISSING
+#     debug: bool = False
+#     compile: bool = True
+#     save_components: List[str] = field(default_factory=list)
+
 
 
 def build_train_dataloader(model, batch_size=TRAIN_BATCH_SIZE, num_samples=None):
