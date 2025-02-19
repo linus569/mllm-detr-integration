@@ -1,10 +1,12 @@
-from functools import cached_property
 import json
+from functools import cached_property
+from typing import Dict, List, Union
+
+import albumentations as A
 import numpy as np
 import torch
+from albumentations.pytorch import ToTensorV2
 from PIL import Image
-from typing import Dict, List, Union
-from transformers import AutoTokenizer
 
 
 class Processor:
@@ -19,8 +21,24 @@ class Processor:
         self.tokenizer = model.tokenizer
         self.image_token = "<image>"
         self.train = train
-
         self.answer_start_token = "<|im_start|>assistant\n"
+
+        # TODO: define transformes in config
+        self.bbox_transform = A.Compose(
+            [
+                # A.ToRGB(), # only if normal transforms not used
+                A.Resize(384, 384),  # 336,336
+                A.Normalize(
+                    mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)
+                ),  # only if normal transforms not used
+                # A.HorizontalFlip(p=0.5),
+                # A.RandomBrightnessContrast(p=0.2),
+                ToTensorV2(),
+            ],
+            bbox_params=A.BboxParams(
+                format="pascal_voc", label_fields=["class_labels"]
+            ),
+        )
 
     @cached_property
     def tokenized_start_prompt(self):
@@ -31,29 +49,27 @@ class Processor:
 
     def prepare_text_input(
         self,
-        num_patches: int,
+        num_img_tokens: int,
         instance_classes: List[str],
         instance_bboxes: List[List[float]],
         captions: Union[str, List[str]],
-        num_images: int = 1,
+        num_image_patches: int = 0,
         prompt: str = None,
     ) -> str:
         """
         Prepare the input text string by combining image tokens and metadata.
 
         Args:
-            num_patches: Number of image patches to include
+            num_img_tokens: Number of image tokens to include
             instance_classes: List of class names for each instance
             instance_bboxes: List of bounding boxes [x1, y1, x2, y2]
             captions: Image caption(s)
-            num_images: Number of images in the batch
+            num_image_patches: Number of image patches in the batch
             prompt: Prompt for the model
         """
         # Add image tokens based on number of patches
         image_tokens = (
-            f"{self.image_token}"
-            * num_patches
-            * num_images  ## TODO removed for testing * num_patches
+            f"{self.image_token}" * (num_img_tokens * (num_image_patches + 1))
         ).strip()
 
         # Combine bboxes and classes into a list of instances
@@ -92,7 +108,28 @@ class Processor:
         # combined_text = f"{conv_structure_system}{conv_structure_user}{conv_structure_assistent}"
         return combined_text
 
-    def process_batch(self, batch: List[Dict]) -> Dict[str, torch.Tensor]:
+    # TODO: currently duplicte as in dataset, cause it it still used outside
+    def normalize_bbox(self, bbox, image_width, image_height):
+        x1, y1, x2, y2 = bbox
+        return (
+            x1 / image_width,
+            y1 / image_height,
+            x2 / image_width,
+            y2 / image_height,
+        )
+
+    def denormalize_bbox(self, bbox, image_width, image_height):
+        x1, y1, x2, y2 = bbox
+        return (
+            x1 * image_width,
+            y1 * image_height,
+            x2 * image_width,
+            y2 * image_height,
+        )
+
+    def process_batch(
+        self, batch: List[Dict[str, Union[Image.Image, List[str], List[List[float]]]]]
+    ) -> Dict[str, Union[torch.Tensor, List[torch.Tensor]]]:
         """
         Process a batch of dictionaries to create model inputs.
 
@@ -109,6 +146,37 @@ class Processor:
                 - 'attention_mask': attention mask
                 - 'pixel_values': stacked image tensors
         """
+        transformed_images = []
+        transformed_bboxes = []
+        transformed_classes = []
+
+        for sample in batch:
+            transformed = self.bbox_transform(
+                image=np.array(sample["image"]),
+                bboxes=sample["instance_bboxes"],
+                class_labels=sample["instance_classes"],
+            )
+            transformed_images.append(transformed["image"])
+            transformed_classes.append(
+                torch.tensor(transformed["class_labels"], dtype=torch.int64)
+            )
+
+            # Normalize values of bboxes
+            transformed_img = transformed["image"]
+            norm_bboxes = [
+                self.normalize_bbox(
+                    bbox, transformed_img.shape[1], transformed_img.shape[2]
+                )
+                for bbox in transformed["bboxes"]
+            ]
+            transformed_bboxes.append(torch.tensor(norm_bboxes, dtype=torch.float16))
+
+        instance_classes_id = [
+            torch.tensor(sample["instance_classes_id"], dtype=torch.int64)
+            for sample in batch
+        ]
+        images = torch.stack(transformed_images)
+
         # Get number of tokens of image encoder
         num_tokens = self.model.image_encoder.vision_tower.vision_model.embeddings.position_embedding.weight.shape[
             0
@@ -118,9 +186,10 @@ class Processor:
         text_inputs = [
             self.prepare_text_input(
                 num_tokens,
-                sample["instance_classes"],
-                sample["instance_bboxes"],
+                transformed_classes,
+                transformed_bboxes,
                 sample["captions"],
+                num_image_patches=0,
             )
             for sample in batch
         ]
@@ -132,11 +201,6 @@ class Processor:
             truncation=True,
             # max_length=self.max_length,
             return_tensors="pt",
-        )
-
-        # Stack images
-        images = torch.stack(
-            [torch.from_numpy(np.array(sample["image"])) for sample in batch]
         )
 
         ## Create loss_mask
@@ -167,15 +231,12 @@ class Processor:
         # Convert loss masks back to PyTorch tensors
         loss_masks = torch.tensor(loss_masks, dtype=torch.float32)
 
-        instance_bboxes = [sample["instance_bboxes"] for sample in batch]
-        instance_classes_id = [sample["instance_classes_id"] for sample in batch]
-
         return {
             "input_ids": tokenized["input_ids"],
             "attention_mask": tokenized["attention_mask"],
             "images": images,
             "loss_masks": loss_masks,
-            "instance_bboxes": instance_bboxes,
+            "instance_bboxes": transformed_bboxes,
             "instance_classes_id": instance_classes_id,
         }
 

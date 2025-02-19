@@ -1,8 +1,8 @@
-import json
 import torch
-from model.loss import masked_cross_entropy
-from transformers import AutoTokenizer
 from llava.model.language_model.llava_qwen import LlavaQwenForCausalLM
+from transformers import AutoTokenizer
+
+from model.loss import masked_cross_entropy
 
 
 class VisionLanguageModel(torch.nn.Module):
@@ -11,9 +11,6 @@ class VisionLanguageModel(torch.nn.Module):
 
         # Load model
         self.model = LlavaQwenForCausalLM.from_pretrained(model_name)
-        # self.model type LlavaQwenForCausalLM (VLM)
-        # self.model.get_model() type LlavaQwenModel (LLM including the projector)
-        # self.model.get_vision_tower() type SigLipVisionTower
 
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.image_token = "<image>"
@@ -25,15 +22,20 @@ class VisionLanguageModel(torch.nn.Module):
         self.projector = self.model.get_model().mm_projector
         print("Model initialized")
 
-    def forward(
-        self, input_ids, attention_mask, images, labels=None
-    ):
+    def forward(self, input_ids, attention_mask, images, labels=None):
         # Image feature extraction
-        image_features = self.image_encoder(images)
+        if images.ndim == 5:  # If patches are used
+            image_features = []
+            for img in images:
+                image_features.append(self.image_encoder(img))
+            # convert list to tensor
+            image_features = torch.stack(image_features)
+        else:
+            image_features = self.image_encoder(images)
         image_features = image_features.to(dtype=torch.float32)
 
         image_features = self.projector(image_features)
-        # shape of image_features is (batch_size, num_image_tokens, token_size_text_encoder)
+        # shape of image_features is (batch_size, (num_patches), num_image_tokens, token_size_text_encoder)
 
         # Token embeddings
         embedding_layer = self.text_encoder.get_input_embeddings()
@@ -44,6 +46,8 @@ class VisionLanguageModel(torch.nn.Module):
 
         n_image_tokens = (input_ids == image_token_id).sum().item()
         n_image_features = image_features.shape[0] * image_features.shape[1]
+        if image_features.ndim == 4:  # if patches are used
+            n_image_features *= image_features.shape[2]
         if n_image_tokens != n_image_features:
             raise ValueError(
                 f"Image features and image tokens do not match: tokens: {n_image_tokens}, features {n_image_features}"
@@ -79,21 +83,29 @@ class VisionLanguageModel(torch.nn.Module):
         image,
         max_new_tokens=2048,
         stopping_criteria=None,
-        **kwargs
+        **kwargs,
     ):
-        assert (
-            image.dim() == 4
-        ), "Image should be of shape [batch_size, channels, height, width]"
-        #assert image.shape[0] == 1, "Only single image supported"
+        assert image.dim() in (
+            4,
+            5,
+        ), "Image should be of shape [batch_size, channels, height, width] or [batch_size, num_patches, channels, height, width]"
         assert image.dtype == torch.float32, "Image should be of type float32"
 
         # Image feature extraction
-        # Ensure image is in correct format [batch_size, channels, height, width]
-        if image.shape[-1] == 3:  # If channels are last
-            image = image.permute(0, 3, 1, 2)  # Move channels to second dimension
+        if image.dim() == 5:  # Image with patches
+            image_features = []
+            for img in image:
+                # Ensure correct channel order for each patch
+                if img.shape[-1] == 3:  # If channels are last
+                    img = img.permute(0, 3, 1, 2)
+                image_features.append(self.image_encoder(img))
+            image_features = torch.stack(image_features)
+        else:  # Handle regular images
+            # Ensure image is in correct format [batch_size, channels, height, width]
+            if image.shape[-1] == 3:  # If channels are last
+                image = image.permute(0, 3, 1, 2)
+            image_features = self.image_encoder(image)
 
-        # Image feature extraction
-        image_features = self.image_encoder(image)
         image_features = self.projector(image_features)
 
         # Token embeddings
