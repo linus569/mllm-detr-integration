@@ -1,0 +1,35 @@
+defaults:
+  - ExperimentConfig
+  - _self_ # allows configs defined in this file to be overwritten by experiment
+
+
+num_workers: 10
+device: cuda
+debug: false
+seed: 43 # not used
+save_components: [] # not used
+
+train: true
+evaluate: true
+eval_mode: val
+
+
+
+hydra:
+  job:
+    name: ${name}
+    config:
+      override_dirname:
+        kv_sep: __
+        item_sep: /
+        exclude_keys: [experiment, name, device, print_freq, val_freq, debug,
+                       num_workers, prefetch]
+
+  run:
+    dir: ${ifel:${debug},debug_logs,logs}/${name}/${hydra.job.override_dirname}/run_${now:%Y-%m-%d_%H-%M-%S}
+
+  sweep:
+    dir: ${ifel:${debug},debug_logs,logs}/${name}
+    subdir: ${hydra.job.override_dirname}/run_${now:%Y-%m-%d_%H-%M-%S}
+
+  

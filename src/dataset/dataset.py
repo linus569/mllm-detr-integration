@@ -1,11 +1,27 @@
 import random
+from dataclasses import MISSING, dataclass, field
+from typing import Dict, List, Optional, Tuple
 
 import torch
 from PIL import Image
 from pycocotools.coco import COCO
 from torch.utils.data import DataLoader, Dataset, Subset
+from transformers import PreTrainedTokenizerFast as Tokenizer
 
 from dataset.processor import Processor
+
+
+@dataclass
+class DatasetConfig:
+    name: str = MISSING
+
+    # --- Normalization parameters ---
+    # pixel_mean: List[float] = MISSING
+    # pixel_std: List[float] = MISSING
+
+    # --- Dataset parameters ---
+    data_dir: str = MISSING
+    annotations_dir: str = MISSING
 
 
 class COCODataset(Dataset):
@@ -59,25 +75,46 @@ def sample_indices(dataset_size: int, num_samples: int, seed: int = 42):
 
 
 def build_dataloader(
-    image_dir: str,
-    annotations_file: str,
+    config,
+    dataset_config: DatasetConfig,
     batch_size: int,
-    model: torch.nn.Module,
-    train: bool,
-    num_samples: int = None,
-    random_idx: int = True,
+    tokenizer: Tokenizer,
+    is_train: bool,
+    num_workers: int = 0,
+    image_size: Tuple[int, int] = (384, 384),
+    num_image_tokens: int = 729,
+    subset_size: Optional[int] = None,
+    use_random_subset: int = True,
 ) -> DataLoader:
-    dataset = COCODataset(image_dir=image_dir, annotation_file=annotations_file)
+    dataset = COCODataset(
+        image_dir=dataset_config.data_dir,
+        annotation_file=dataset_config.annotations_dir,
+    )
 
-    if num_samples:
-        if random_idx:
-            indices = sample_indices(len(dataset), num_samples)
+    if subset_size:
+        if use_random_subset:
+            indices = sample_indices(len(dataset), subset_size)
         else:
-            indices = range(num_samples)
+            indices = range(subset_size)
         dataset = Subset(dataset, indices)
 
-    processor = Processor(model, train=train)
+    processor = Processor(
+        config=config,
+        tokenizer=tokenizer,
+        img_size=image_size,
+        num_img_tokens=num_image_tokens,
+        train=is_train,
+    )
 
+    # TODO: switch between batch_size for train and val?
     return DataLoader(
-        dataset=dataset, batch_size=batch_size, collate_fn=processor.collate_fn
+        dataset=dataset,
+        batch_size=batch_size,
+        shuffle=is_train,
+        drop_last=is_train,
+        pin_memory=True,
+        num_workers=num_workers,
+        prefetch_factor=3 if num_workers > 0 else None,
+        collate_fn=processor.collate_fn,
+        persistent_workers=False,
     )

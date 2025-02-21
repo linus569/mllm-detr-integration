@@ -1,126 +1,127 @@
-from dataclasses import dataclass, field
 import dataclasses
-from omegaconf import MISSING, OmegaConf
-from typing import Any, Callable, Dict, Generic, Iterable, List, Mapping, Optional, Sequence, Collection, TypeVar, Union
 import json
+import logging
 import re
-from typing import List, Optional
+from dataclasses import dataclass, field
+from typing import (
+    Any,
+    Callable,
+    Collection,
+    Dict,
+    Generic,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    TypeVar,
+    Union,
+)
+
 import torch
-from dataset.dataset import build_dataloader
+from omegaconf import MISSING, OmegaConf
 from transformers import StoppingCriteria
 
-# TODO: replace with config
-TRAIN_BATCH_SIZE = 1
-VAL_BATCH_SIZE = 1
-TEST_BATCH_SIZE = 1
+from dataset.dataset import DatasetConfig, build_dataloader
 
-server = "/u/home/salzmann/Documents/dev/master-thesis/"
-server = ""
-
-TRAIN_DATA_DIR = server + "data/coco/images/train2017"
-TRAIN_ANNOTATIONS_DIR = server + "data/coco/annotations/instances_train2017.json"
-VAL_DATA_DIR = server + "data/coco/images/val2017"
-VAL_ANNOTATIONS_DIR = server + "data/coco/annotations/instances_val2017.json"
-TEST_DATA_DIR = server + "data/coco/images/test2017"
-TEST_ANNOTATIONS_DIR = server + "data/coco/annotations/image_info_test2017.json"
-
-@dataclass
-class TrainConfig:
-    batch_size: int = 1
-    num_samples: Optional[int] = None
-    epochs: int = 10
-    lr: float = 5e-5
-    warmup_ratio: float = 0.1
-    gradient_accumulation_steps: int = 4
-    max_grad_norm: Optional[float] = None
+log = logging.getLogger(__name__)
 
 
 @dataclass
 class ExperimentConfig:
-    train: TrainConfig = field(default_factory=TrainConfig)
-    model_name: str = 'lmms-lab/llava-onevision-qwen2-0.5b-si'
+    name: str = MISSING
+    seed: int = MISSING
+
+    train_dataset: DatasetConfig = MISSING
+    val_dataset: DatasetConfig = MISSING
+    test_dataset: DatasetConfig = MISSING
+
+    main_dir: str = MISSING
+    model_name: str = "lmms-lab/llava-onevision-qwen2-0.5b-si"
+
+    checkpoint_dir: str = "checkpoints"
+
+    train: bool = True
     evaluate: bool = True
-    eval_mode: str = 'val'
-    device: str = 'cuda'
-    checkpoint_dir: str = 'checkpoints'
+    eval_mode: str = "val"
+    # eval_tasks: Dict[str, Any] = field(default_factory=dict)
+
+    num_samples: Optional[int] = None
+    max_tokens: int = MISSING
+
+    batch_size: int = MISSING
+    epochs: int = MISSING
+    # max_steps: Optional[int] = None
+    # max_epochs: Optional[int] = None
+    lr: float = MISSING
+    # min_lr: float = MISSING
+    # warmup_lr: Optional[float] = MISSING
+    warmup_ratio: float = MISSING
+    weight_decay: Optional[float] = MISSING
+    gradient_accumulation_steps: int = MISSING
+    max_grad_norm: Optional[float] = MISSING
+    # grad_clip_norm: Optional[float] = MISSING
+    # early_stopping_patience: Optional[int] = None
+
+    # metric: Optional[str] = None
+    # metric_mode: str = 'max'
+
+    val_freq: Optional[int] = None
+    val_ep: Optional[int] = None
+    print_freq: int = MISSING
+    num_workers: int = MISSING
+    device: str = MISSING
     debug: bool = False
-
-# @dataclass
-# class ExperimentConfig:
-#     name: str = MISSING
-#     seed: int = MISSING
-
-#     model: Any = MISSING
-
-#     continue_from_checkpoint: Optional[str] = None
-#     load_modules_from_checkpoint: Optional[List[str]] = None
-
-#     #train_dataset: Dict[str, DatasetConfig] = field(default_factory=dict)
-#     val_tasks: Dict[str, Any] = field(default_factory=dict)  # Dict[str, EvalConfig]
-#     #transform: TransformConfig = MISSING
-#     train: bool = True
-#     evaluate: bool = True
-#     eval_mode: str = 'val'
-#     eval_tasks: Dict[str, Any] = field(default_factory=dict)
-
-#     batch_size: int = MISSING
-#     max_steps: Optional[int] = None
-#     max_epochs: Optional[int] = None
-#     lr: float = MISSING
-#     min_lr: float = MISSING
-#     warmup_lr: Optional[float] = MISSING
-#     warmup_steps: int = MISSING
-#     weight_decay: float = MISSING
-#     accumulation_steps: int = MISSING
-#     grad_clip_norm: Optional[float] = MISSING
-#     early_stopping_patience: Optional[int] = None
-
-#     metric: Optional[str] = None
-#     metric_mode: str = 'max'
-
-#     val_freq: Optional[int] = None
-#     val_ep: Optional[int] = None
-#     print_freq: int = MISSING
-#     num_workers: int = MISSING
-#     device: str = MISSING
-#     debug: bool = False
-#     compile: bool = True
-#     save_components: List[str] = field(default_factory=list)
+    # compile: bool = True
+    save_components: List[str] = field(default_factory=list)
 
 
-
-def build_train_dataloader(model, batch_size=TRAIN_BATCH_SIZE, num_samples=None):
+def build_train_dataloader(config: ExperimentConfig, model, subset_size=None):
     return build_dataloader(
-        image_dir=TRAIN_DATA_DIR,
-        annotations_file=TRAIN_ANNOTATIONS_DIR,
-        batch_size=batch_size,
-        model=model,
-        train=True,
-        num_samples=num_samples,
+        config=config,
+        dataset_config=config.train_dataset,
+        batch_size=config.batch_size,
+        tokenizer=model.tokenizer,
+        is_train=True,
+        num_workers=config.num_workers,
+        # image_size=config.transform.image_size,
+        num_image_tokens=model.num_img_tokens,
+        subset_size=subset_size,
+        # use_random_subset=True,
     )
 
 
-def build_val_dataloader(model, batch_size=VAL_BATCH_SIZE, num_samples=None, random_index=True):
+def build_val_dataloader(
+    config: ExperimentConfig, model, subset_size=None, use_random_subset=True
+):
     return build_dataloader(
-        image_dir=VAL_DATA_DIR,
-        annotations_file=VAL_ANNOTATIONS_DIR,
-        batch_size=batch_size,
-        model=model,
-        train=False,
-        num_samples=num_samples,
-        random_idx=random_index,
+        config=config,
+        dataset_config=config.val_dataset,
+        batch_size=config.batch_size,
+        tokenizer=model.tokenizer,
+        is_train=False,
+        num_workers=config.num_workers,
+        # image_size=config.transform.image_size,
+        num_image_tokens=model.num_img_tokens,
+        subset_size=subset_size,
+        use_random_subset=use_random_subset,
     )
 
 
-def build_test_dataloader(model, batch_size=TEST_BATCH_SIZE, num_samples=None, random_index=True):
+def build_test_dataloader(
+    config: ExperimentConfig, model, subset_size=None, use_random_subset=True
+):
     return build_dataloader(
-        image_dir=TEST_DATA_DIR,
-        annotations_file=TEST_ANNOTATIONS_DIR,
-        batch_size=batch_size,
-        model=model,
-        train=False,
-        num_samples=num_samples,
-        random_idx=random_index,
+        config=config,
+        dataset_config=config.train_dataset,
+        batch_size=config.batch_size,
+        tokenizer=model.tokenizer,
+        is_train=False,
+        num_workers=config.num_workers,
+        # image_size=config.transform.image_size,
+        num_image_tokens=model.num_img_tokens,
+        subset_size=subset_size,
+        use_random_subset=use_random_subset,
     )
 
 
@@ -131,34 +132,37 @@ def seed_everything(seed):
 def save_training_checkpoint(todo):
     pass
 
+
 def parse_model_output(text):
     try:
         # Replace single quotes with double quotes
         json_text = text.replace("'", '"')
         # Remove any text before first [ and after last ]
-        json_text = json_text[json_text.find('['):json_text.rfind(']')+1]
+        json_text = json_text[json_text.find("[") : json_text.rfind("]") + 1]
         # Fix missing quotes around keys
-        json_text = re.sub(r'(\w+):', r'"\1":', json_text)
+        json_text = re.sub(r"(\w+):", r'"\1":', json_text)
 
         # Try to parse the JSON
         objects = json.loads(json_text)
-        
+
         # Validate format of each object
         for obj in objects:
             if not isinstance(obj, dict):
                 return None
-            if 'class' not in obj or 'bbox' not in obj:
+            if "class" not in obj or "bbox" not in obj:
                 return None
-            if not isinstance(obj['bbox'], list) or len(obj['bbox']) < 4:
+            if not isinstance(obj["bbox"], list) or len(obj["bbox"]) < 4:
                 return None
-            if not all(isinstance(x, (int, float)) for x in obj['bbox']):
+            if not all(isinstance(x, (int, float)) for x in obj["bbox"]):
                 return None
-                
+
         return objects
     except json.JSONDecodeError as e:
-        print(f"Failed to parse model output text '{text}' (converted to json text '{json_text}') with error {e}")
+        log.error(
+            f"Failed to parse model output text '{text}' (converted to json text '{json_text}') with error {e}"
+        )
         return None
-    
+
 
 def parse_model_output_to_boxes(text, dataset, index, device):
     # TODO: improve code
@@ -169,7 +173,7 @@ def parse_model_output_to_boxes(text, dataset, index, device):
     failed_conversion = 0
 
     # Get original dataset from dataset if Subset is used
-    if hasattr(dataset, 'dataset'):
+    if hasattr(dataset, "dataset"):
         dataset = dataset.dataset
 
     text_to_parse = text[index].strip()
@@ -181,31 +185,44 @@ def parse_model_output_to_boxes(text, dataset, index, device):
                 # Convert bbox to tensor
                 bbox = pred.get("bbox", [])
                 if len(bbox) == 4:
-                    pred_boxes.append(torch.tensor(bbox, dtype=torch.float32).to(device))
-                    
+                    pred_boxes.append(
+                        torch.tensor(bbox, dtype=torch.float32).to(device)
+                    )
+
                     # Convert class name to index
                     class_name = pred.get("class", "")
-                    class_id = dataset.cat_name_to_id.get(class_name, 0)  # Default to 0 if not found
+                    class_id = dataset.cat_name_to_id.get(
+                        class_name, 0
+                    )  # Default to 0 if not found
                     pred_labels.append(class_id)
-                    
+
                     pred_scores.append(1.0)
             except (ValueError, TypeError) as e:
                 failed_conversion += 1
-            
 
     # TODO: do something with failed_conversion print or log or something
 
-
     bbox = torch.stack(pred_boxes) if pred_boxes else torch.zeros((0, 4))
-    bbox = unnormalize_bbox(bbox.to(device), width=384, height=384) # TODO: get height and width from config
+    bbox = unnormalize_bbox(
+        bbox.to(device), width=384, height=384
+    )  # TODO: get height and width from config
 
     # TODO: addd index again for batches
-     # Create return tensors with proper types
+    # Create return tensors with proper types
     return {
         "boxes": bbox,
-        "labels": torch.tensor(pred_labels, dtype=torch.long, device=device) if pred_labels else torch.zeros(0, dtype=torch.long).to(device),
-        "scores": torch.tensor(pred_scores, dtype=torch.float32, device=device) if pred_scores else torch.zeros(0).to(device)
+        "labels": (
+            torch.tensor(pred_labels, dtype=torch.long, device=device)
+            if pred_labels
+            else torch.zeros(0, dtype=torch.long).to(device)
+        ),
+        "scores": (
+            torch.tensor(pred_scores, dtype=torch.float32, device=device)
+            if pred_scores
+            else torch.zeros(0).to(device)
+        ),
     }
+
 
 def unnormalize_bbox(bbox: torch.Tensor, width: int, height: int) -> torch.Tensor:
     """
@@ -218,19 +235,19 @@ def unnormalize_bbox(bbox: torch.Tensor, width: int, height: int) -> torch.Tenso
         Tensor of same shape with pixel coordinates
     """
     if bbox.numel() == 0:
-        return torch.zeros((0,4), device=bbox.device, dtype=bbox.dtype)
-    
+        return torch.zeros((0, 4), device=bbox.device, dtype=bbox.dtype)
+
     if bbox.dim() == 1:
         bbox = bbox.unsqueeze(0)
-    
+
     # Create scaling factor tensor
-    scale = torch.tensor([width, height, width, height], 
-                        device=bbox.device, 
-                        dtype=bbox.dtype)
-    
+    scale = torch.tensor(
+        [width, height, width, height], device=bbox.device, dtype=bbox.dtype
+    )
+
     # Vectorized multiplication
     bbox_unnorm = bbox * scale
-    
+
     return bbox_unnorm if bbox.dim() == 2 else bbox_unnorm.squeeze(0)
 
 

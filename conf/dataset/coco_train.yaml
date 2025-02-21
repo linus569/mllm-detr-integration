@@ -1,0 +1,8 @@
+defaults: 
+  - DatasetConfig
+
+# TODO: pixel_mean, pixel_std
+
+name: coco_train
+data_dir: ${main_dir}/data/coco/images/train2017
+annotations_dir: ${main_dir}/data/coco/annotations/instances_train2017.json

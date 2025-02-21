@@ -15,6 +15,7 @@ from tqdm import tqdm
 from transformers import get_scheduler
 
 import wandb
+from dataset.dataset import DatasetConfig
 from model.model import VisionLanguageModel
 from utils.train_utils import (
     ExperimentConfig,
@@ -24,6 +25,8 @@ from utils.train_utils import (
     parse_model_output_to_boxes,
     unnormalize_bbox,
 )
+
+log = logging.getLogger(__name__)
 
 
 class Trainer:
@@ -43,8 +46,8 @@ class Trainer:
         self.scheduler = None
 
         self.checkpoint_dir = config.checkpoint_dir
-        self.gradient_accumulation_steps = config.train.gradient_accumulation_steps
-        self.max_grad_norm = config.train.max_grad_norm
+        self.gradient_accumulation_steps = config.gradient_accumulation_steps
+        self.max_grad_norm = config.max_grad_norm
 
         # Initialize metric once
         self.metric = MeanAveragePrecision(box_format="xyxy", iou_type="bbox").to(
@@ -145,8 +148,6 @@ class Trainer:
         )
 
         for batch in progress_bar:
-            # TODO: maybe better to patch images for localization performance
-
             # Generate predictions
             outputs = self.model.generate(
                 input_ids=batch["input_ids"].to(self.device),
@@ -175,8 +176,11 @@ class Trainer:
 
             target_boxes = [
                 {
-                    # TODO: get height and width from config
-                    "boxes": unnormalize_bbox(boxes.to(self.device), 384, 384),
+                    "boxes": unnormalize_bbox(
+                        boxes.to(self.device),
+                        self.model.image_size,
+                        self.model.image_size,
+                    ),
                     "labels": labels.to(self.device),
                 }
                 for boxes, labels in zip(
@@ -228,14 +232,14 @@ class Trainer:
     def lazy_init_training_objects(self):
         # Create dataloader
         self.train_dataloader = build_train_dataloader(
-            self.model,
-            batch_size=self.config.train.batch_size,
-            num_samples=self.config.train.num_samples,
+            config=self.config,
+            model=self.model,
+            subset_size=self.config.num_samples,
         )
         self.val_dataloader = build_val_dataloader(
-            self.model, batch_size=2, num_samples=2
+            config=self.config, model=self.model, subset_size=self.config.num_samples
         )
-        epochs = self.config.train.epochs
+        epochs = self.config.epochs
 
         # Freeze all layers except projection layer and new token embeddings
         for param in self.model.parameters():
@@ -246,13 +250,13 @@ class Trainer:
             param.requires_grad = True
 
         trainable_params = [{"params": self.model.projector.parameters()}]
-        self.optimizer = AdamW(trainable_params, lr=self.config.train.lr)
+        self.optimizer = AdamW(trainable_params, lr=self.config.lr)
 
         num_training_steps = len(self.train_dataloader) * epochs
         self.scheduler = get_scheduler(
             "cosine",
             optimizer=self.optimizer,
-            num_warmup_steps=num_training_steps * self.config.train.warmup_ratio,
+            num_warmup_steps=num_training_steps * self.config.warmup_ratio,
             num_training_steps=num_training_steps,
         )
 
@@ -268,7 +272,7 @@ class Trainer:
         best_map = 0
 
         if num_epochs == None:
-            num_epochs = self.config.train.epochs
+            num_epochs = self.config.epochs
 
         for epoch in range(num_epochs):
             # Training loop
@@ -277,7 +281,7 @@ class Trainer:
             # Validation
             val_metrics = self.evaluate(epoch, num_epochs)
 
-            print(val_metrics)
+            log.info(val_metrics)
             wandb.log(
                 {
                     "epoch": epoch,
@@ -293,15 +297,15 @@ class Trainer:
             # save model projection layer after each epoch with current timestamp and epoch
             self.save_checkpoint(epoch, val_metrics, is_best)
 
-            print(f"Epoch {epoch+1}/{num_epochs}, Loss: {train_loss}")
+            log.info(f"Epoch {epoch+1}/{num_epochs}, Loss: {train_loss}")
 
 
 @hydra.main(config_path="../conf", config_name="train", version_base=None)
 def run_training(config: ExperimentConfig):
-    print(OmegaConf.to_yaml(config))
+    log.info(OmegaConf.to_yaml(config))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+    log.info(f"Using device: {device}")
 
     model = VisionLanguageModel(model_name=config.model_name).to(device)
 
@@ -329,9 +333,11 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     cs = ConfigStore.instance()
     cs.store(name="ExperimentConfig", node=ExperimentConfig)
-    # cs.store(name="DatasetConfig", group="dataset", node=DatasetConfig)
+    cs.store(name="DatasetConfig", group="dataset", node=DatasetConfig)
     # OmegaConf.register_new_resolver("models_dir", lambda: MODELS_DIR)
-    # OmegaConf.register_new_resolver("ifel", lambda flag, val_true, val_false: val_true if flag else val_false)
+    OmegaConf.register_new_resolver(
+        "ifel", lambda flag, val_true, val_false: val_true if flag else val_false
+    )
     # OmegaConf.register_new_resolver("project_dir", lambda: PROJECT_DIR)
 
     # import model

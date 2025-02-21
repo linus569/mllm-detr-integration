@@ -1,0 +1,27 @@
+# @package _global_
+defaults:
+  - /dataset@train_dataset: coco_train
+  - /dataset@val_dataset: coco_val
+  - /dataset@test_dataset: coco_test
+
+debug: true
+device: cpu
+num_workers: 0
+
+name: local_test
+main_dir: .
+
+model_name: 'lmms-lab/llava-onevision-qwen2-0.5b-si'
+checkpoint_dir: 'checkpoints'
+
+batch_size: 2
+num_samples: 4
+val_freq: 2000 # not used
+print_freq: 50 # not used
+epochs: 2
+lr: 5e-5
+warmup_ratio: 0.1
+weight_decay: null # not used
+gradient_accumulation_steps: 2
+max_grad_norm: null
+max_tokens: 3000 #null

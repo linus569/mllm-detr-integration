@@ -1,26 +1,31 @@
+import logging
 import torch
 from llava.model.language_model.llava_qwen import LlavaQwenForCausalLM
 from transformers import AutoTokenizer
 
 from model.loss import masked_cross_entropy
 
+log = logging.getLogger(__name__)
 
 class VisionLanguageModel(torch.nn.Module):
     def __init__(self, model_name):
         super(VisionLanguageModel, self).__init__()
-
-        # Load model
+        # Get model components
         self.model = LlavaQwenForCausalLM.from_pretrained(model_name)
+        self.image_encoder = self.model.get_vision_tower()
+        self.projector = self.model.get_model().mm_projector
 
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.image_token = "<image>"
         self.model.resize_token_embeddings(len(self.tokenizer))
 
-        # Get model components
-        self.image_encoder = self.model.get_vision_tower()
-        self.text_encoder = self.model
-        self.projector = self.model.get_model().mm_projector
-        print("Model initialized")
+        self.image_size = self.image_encoder.config.image_size
+        # Get number of tokens of image encoder
+        self.num_img_tokens = self.image_encoder.vision_tower.vision_model.embeddings.position_embedding.weight.shape[
+            0
+        ]
+
+        log.info("Model initialized")
 
     def forward(self, input_ids, attention_mask, images, labels=None):
         # Image feature extraction
@@ -38,7 +43,7 @@ class VisionLanguageModel(torch.nn.Module):
         # shape of image_features is (batch_size, (num_patches), num_image_tokens, token_size_text_encoder)
 
         # Token embeddings
-        embedding_layer = self.text_encoder.get_input_embeddings()
+        embedding_layer = self.model.get_input_embeddings()
         inputs_embeds = embedding_layer(input_ids)
 
         # Integrate image features into token embeddings
@@ -61,7 +66,7 @@ class VisionLanguageModel(torch.nn.Module):
         inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)
 
         # LLM forward pass
-        outputs = self.text_encoder(
+        outputs = self.model(
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
         )
@@ -70,7 +75,7 @@ class VisionLanguageModel(torch.nn.Module):
             return outputs
 
         loss = masked_cross_entropy(
-            outputs.logits, labels, vocab_size=self.text_encoder.vocab_size
+            outputs.logits, labels, vocab_size=self.model.vocab_size
         )
         outputs.loss = loss
         return outputs
@@ -109,7 +114,7 @@ class VisionLanguageModel(torch.nn.Module):
         image_features = self.projector(image_features)
 
         # Token embeddings
-        embedding_layer = self.text_encoder.get_input_embeddings()
+        embedding_layer = self.model.get_input_embeddings()
         inputs_embeds = embedding_layer(input_ids)
 
         # Integrate image features into embeddings
@@ -130,7 +135,7 @@ class VisionLanguageModel(torch.nn.Module):
         # )
 
         # direcly call generate on superclass as inputs_embeds is already created and class implementation does not support this
-        outputs = super(LlavaQwenForCausalLM, self.text_encoder).generate(
+        outputs = super(LlavaQwenForCausalLM, self.model).generate(
             inputs_embeds=inputs_embeds,
             max_new_tokens=max_new_tokens,
             attention_mask=attention_mask,
@@ -149,4 +154,4 @@ if __name__ == "__main__":
     input_ids = torch.tensor([[1, 2, 3, 4, 5]])
     attention_mask = torch.tensor([[1, 1, 1, 1, 1]])
     output = model(input_ids, attention_mask, image)
-    print(output.size())
+    log.info(output.size())

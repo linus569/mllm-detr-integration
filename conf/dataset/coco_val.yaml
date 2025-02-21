@@ -1,0 +1,8 @@
+defaults: 
+  - DatasetConfig
+
+# TODO: pixel_mean, pixel_std
+
+name: coco_val
+data_dir: ${main_dir}/data/coco/images/val2017
+annotations_dir: ${main_dir}/data/coco/annotations/instances_val2017.json
