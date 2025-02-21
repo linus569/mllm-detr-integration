@@ -1,36 +1,49 @@
 import json
 from functools import cached_property
-from typing import Dict, List, Union
+from typing import Dict, List, Tuple, Union
 
 import albumentations as A
 import numpy as np
 import torch
 from albumentations.pytorch import ToTensorV2
 from PIL import Image
+from transformers import PreTrainedTokenizerFast as Tokenizer
 
 
 class Processor:
-    def __init__(self, model, train=True):
+    def __init__(
+        self,
+        config,
+        tokenizer: Tokenizer,
+        img_size: Tuple[int, int],
+        num_img_tokens: int,
+        train: bool = True,
+    ):
         """
         Initialize the processor with a tokenizer.
 
         Args:
-            tokenizer: HuggingFace tokenizer for text processing
+            tokenizer: PreTrainedTokenizer
+            img_size: Tuple of image dimensions (height, width)
+            num_img_tokens: Number of image tokens to include
+            train: Whether the processor is used in training
+
         """
-        self.model = model
-        self.tokenizer = model.tokenizer
-        self.image_token = "<image>"
+        self.config = config
+        self.tokenizer = tokenizer
+        self.num_img_tokens = num_img_tokens
         self.train = train
+        self.img_size = img_size
+        self.max_length = self.config.max_tokens  # None, 512
+
+        self.image_token = "<image>"
         self.answer_start_token = "<|im_start|>assistant\n"
 
         # TODO: define transformes in config
         self.bbox_transform = A.Compose(
             [
-                # A.ToRGB(), # only if normal transforms not used
-                A.Resize(384, 384),  # 336,336
-                A.Normalize(
-                    mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)
-                ),  # only if normal transforms not used
+                A.Resize(self.img_size[0], self.img_size[1]),
+                A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
                 # A.HorizontalFlip(p=0.5),
                 # A.RandomBrightnessContrast(p=0.2),
                 ToTensorV2(),
@@ -88,10 +101,10 @@ class Processor:
             prompt = "What is shown in this image? Describe it in detail."
             prompt = "Detect all objects in this image! Only output list of json objects that are predicted. Example: [{'class': 'dog', 'bbox': [0.1, 0.2, 0.3, 0.4]}, {'class': 'cat', 'bbox': [0.5, 0.6, 0.7, 0.8]}]"
 
-        system_text = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
+        # system_text = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
         # system_text = "<|im_start|>system\nYou are a helpful assistant trained to detect objects in images and output their locations in a standardized JSON format.<|im_end|>\n"
-        user_text = f"<|im_start|>user\n{image_tokens}\n{prompt}<|im_end|>\n"
-        assistent_text = "<|im_start|>assistant\n"
+        # user_text = f"<|im_start|>user\n{image_tokens}\n{prompt}<|im_end|>\n"
+        # assistent_text = "<|im_start|>assistant\n"
 
         combined_text = (
             "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
@@ -151,6 +164,30 @@ class Processor:
         transformed_classes = []
 
         for sample in batch:
+            # # Check if x_max > x_min and y_max > y_min
+            # bboxes = sample["instance_bboxes"]
+            # valid_order = (bboxes[:, 2] > bboxes[:, 0]) & (bboxes[:, 3] > bboxes[:, 1])
+
+            # # remove all invalid bboxes using valid order
+            # s
+
+            # if not np.all(valid_order):
+            #     invalid_idx = np.where(~valid_order)[0][0]
+            #     invalid_bbox = bboxes[invalid_idx]
+
+            # remove all invalid bboxes and their corresponding classes
+            valid_indices = [
+                i
+                for i, bbox in enumerate(sample["instance_bboxes"])
+                if bbox[2] > bbox[0] and bbox[3] > bbox[1]
+            ]
+            sample["instance_bboxes"] = [
+                sample["instance_bboxes"][i] for i in valid_indices
+            ]
+            sample["instance_classes"] = [
+                sample["instance_classes"][i] for i in valid_indices
+            ]
+
             transformed = self.bbox_transform(
                 image=np.array(sample["image"]),
                 bboxes=sample["instance_bboxes"],
@@ -177,15 +214,10 @@ class Processor:
         ]
         images = torch.stack(transformed_images)
 
-        # Get number of tokens of image encoder
-        num_tokens = self.model.image_encoder.vision_tower.vision_model.embeddings.position_embedding.weight.shape[
-            0
-        ]
-
         # Prepare text inputs
         text_inputs = [
             self.prepare_text_input(
-                num_tokens,
+                self.num_img_tokens,
                 transformed_classes,
                 transformed_bboxes,
                 sample["captions"],
@@ -199,7 +231,7 @@ class Processor:
             text_inputs,
             padding=True,
             truncation=True,
-            # max_length=self.max_length,
+            max_length=self.max_length,
             return_tensors="pt",
         )
 
