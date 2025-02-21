@@ -8,7 +8,7 @@ name: finetune_projection
 main_dir: "/u/home/salzmann/Documents/dev/master-thesis/"
 
 model_name: 'lmms-lab/llava-onevision-qwen2-0.5b-si'
-checkpoint_dir: '/u/home/salzmann/Documents/dev/checkpoints'
+checkpoint_dir: '/u/home/salzmann/Documents/dev/master-thesis/checkpoints'
 
 batch_size: 1
 num_samples: null # use full dataset
