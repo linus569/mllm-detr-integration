@@ -47,6 +47,7 @@ class ExperimentConfig:
     # eval_tasks: Dict[str, Any] = field(default_factory=dict)
 
     num_samples: Optional[int] = None
+    val_num_samples: Optional[int] = None
     max_tokens: int = MISSING
 
     batch_size: int = MISSING

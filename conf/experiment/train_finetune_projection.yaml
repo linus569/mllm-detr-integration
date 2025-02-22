@@ -12,6 +12,7 @@ checkpoint_dir: '/u/home/salzmann/Documents/dev/master-thesis/checkpoints'
 
 batch_size: 2
 num_samples: null # use full dataset
+val_num_samples: 1000
 val_freq: 10000
 print_freq: 50
 epochs: 1

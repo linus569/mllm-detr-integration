@@ -304,7 +304,7 @@ class Trainer:
         self.val_dataloader = build_val_dataloader(
             config=self.config,
             model=self.model,
-            subset_size=self.config.num_samples,
+            subset_size=self.config.val_num_samples,
         )
         epochs = self.config.epochs
 
