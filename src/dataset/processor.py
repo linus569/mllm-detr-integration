@@ -36,7 +36,7 @@ class Processor:
         self.img_size = img_size
         self.max_length = self.config.max_tokens  # None, 512
 
-        self.image_token = "<image>"
+        self.image_token = "<image>"  # TODO: config
         self.answer_start_token = "<|im_start|>assistant\n"
 
         # TODO: define transformes in config
@@ -263,11 +263,20 @@ class Processor:
         # Convert loss masks back to PyTorch tensors
         loss_masks = torch.tensor(loss_masks, dtype=torch.float32)
 
+        ## Create Labels
+        # Prepare lables
+        labels = tokenized["input_ids"].clone()
+        # TODO: make image_token_id as attribute
+        image_token_id = self.tokenizer.convert_tokens_to_ids(self.image_token)
+        labels[labels == image_token_id] = -100  # Mask image tokens
+        labels[loss_masks == 0] = -100  # Mask everything except the answer tokens
+
+
         return {
             "input_ids": tokenized["input_ids"],
             "attention_mask": tokenized["attention_mask"],
             "images": images,
-            "loss_masks": loss_masks,
+            "labels": labels,
             "instance_bboxes": transformed_bboxes,
             "instance_classes_id": instance_classes_id,
         }

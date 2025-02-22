@@ -10,11 +10,11 @@ main_dir: "/u/home/salzmann/Documents/dev/master-thesis/"
 model_name: 'lmms-lab/llava-onevision-qwen2-0.5b-si'
 checkpoint_dir: '/u/home/salzmann/Documents/dev/master-thesis/checkpoints'
 
-batch_size: 1
+batch_size: 2
 num_samples: null # use full dataset
-val_freq: 2000 # not used
-print_freq: 50 # not used
-epochs: 3
+val_freq: 10000
+print_freq: 50
+epochs: 1
 lr: 5e-5
 warmup_ratio: 0.1
 weight_decay: null # not used

@@ -1,8 +1,8 @@
 #!/bin/bash
  
-#SBATCH --job-name=small-ds-test-vlm
-#SBATCH --output=/u/home/salzmann/Documents/dev/logs/master-thesis/sbatch_training.out
-#SBATCH --error=/u/home/salzmann/Documents/dev/logs/master-thesis/sbatch_training.err
+#SBATCH --job-name=finetuning-projection
+#SBATCH --output=/u/home/salzmann/Documents/dev/master-thesis/logs/sbatch_training.out
+#SBATCH --error=/u/home/salzmann/Documents/dev/master-thesis/logs/sbatch_training.err
 #SBATCH --mail-user=linus.salzmann@tum.de
 #SBATCH --mail-type=ALL
 #SBATCH --partition=universe

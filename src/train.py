@@ -59,58 +59,94 @@ class Trainer:
 
         os.makedirs(self.checkpoint_dir, exist_ok=True)
 
-    def train_epoch(self, epoch, num_epochs):
-        self.model.train()
+    def train(self, num_epochs=None):
+        if (
+            self.train_dataloader == None
+            or self.val_dataloader == None
+            or self.optimizer == None
+            or self.scheduler == None
+        ):
+            self.lazy_init_training_objects()
+
+        if num_epochs == None:
+            num_epochs = self.config.epochs
+
+        # Initialize variables
+        steps_per_epoch = len(self.train_dataloader)
+        best_map = 0
+        step = 0
         total_loss = 0
         running_loss = 0
 
-        # add tqdm
+        # Initialize progress bar to size of val_freq
         progress_bar = tqdm(
-            self.train_dataloader, desc=f"Train/Epoch {epoch+1}/{num_epochs}"
+            total=(
+                self.config.val_freq
+                if self.config.val_freq is not None
+                else steps_per_epoch * self.config.val_ep
+            ),
+            desc=f"Train/Epoch 0/{num_epochs}",
+            # position=0,
+            # leave=True,
         )
 
-        for step, batch in enumerate(progress_bar):
-            # Move batch to device
-            input_ids = batch["input_ids"].to(self.device)
-            attention_mask = batch["attention_mask"].to(self.device)
-            images = batch["images"].to(self.device)
-            loss_masks = batch["loss_masks"].to(self.device)
+        # Train loop
+        for epoch in range(num_epochs):
+            progress_bar.set_description(f"Train/Epoch {epoch+1}/{num_epochs}")
 
-            # Prepare lables
-            labels = input_ids.clone()
-            # TODO: make image_token_id as attribute
-            image_token_id = self.model.tokenizer.convert_tokens_to_ids(
-                self.model.image_token
-            )
-            labels[labels == image_token_id] = -100  # Mask image tokens
-            labels[loss_masks == 0] = -100  # Mask everything except the answer tokens
+            for batch in self.train_dataloader:
+                # Move batch to device
+                input_ids = batch["input_ids"].to(self.device)
+                attention_mask = batch["attention_mask"].to(self.device)
+                images = batch["images"].to(self.device)
+                labels = batch["labels"].to(self.device)
 
-            # Forward pass
-            if self.device == "cuda":
-                with autocast(device_type=self.device.type):
-                    outputs = self.model(
-                        input_ids=input_ids,
-                        attention_mask=attention_mask,
-                        images=images,
-                        labels=labels,
+                # Forward pass
+                outputs = self.train_step(
+                    step, input_ids, attention_mask, images, labels
+                )
+
+                total_loss += outputs.loss.item()
+                running_loss = total_loss / (step + 1)
+
+                progress_bar.update(1)
+                step += 1
+
+                # Log metrics
+                if step % self.config.print_freq == 0:
+                    progress_bar.set_postfix({"loss": running_loss})
+                    wandb.log(
+                        {
+                            "train/loss": running_loss,
+                            "train/lr": self.scheduler.get_last_lr()[0],
+                        },
+                        step=step,
                     )
-                    loss = outputs.loss / self.gradient_accumulation_steps
 
-                self.scaler.scale(loss).backward()
+                # Validate
+                if step % self.config.val_freq == 0:
+                    val_metrics = self.evaluate(step)
+                    log.info(val_metrics)
 
-                if (step + 1) % self.gradient_accumulation_steps == 0:
-                    # unscale gradients
-                    if self.max_grad_norm is not None:  # grad_clip_norm
-                        self.scaler.unscale_(self.optimizer)
-                        torch.nn.utils.clip_grad_norm_(
-                            self.model.parameters(), self.max_grad_norm
-                        )
+                    is_best = val_metrics["map"] > best_map
+                    if is_best:
+                        best_map = val_metrics["map"]
 
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
-                    self.scheduler.step()
-                    self.optimizer.zero_grad()
-            else:
+                    # save model projection layer after each epoch with current timestamp and epoch
+                    self.save_checkpoint(epoch, val_metrics, is_best)
+
+                    #progress_bar.refresh()
+                    progress_bar.reset()
+
+            train_loss = total_loss / len(self.train_dataloader)
+            log.info(f"Epoch {epoch+1}/{num_epochs}, Loss: {train_loss}")
+            # epoch end
+
+        return best_map
+
+    def train_step(self, step, input_ids, attention_mask, images, labels):
+        if self.device == "cuda":
+            with autocast(device_type=self.device.type):
                 outputs = self.model(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
@@ -119,33 +155,50 @@ class Trainer:
                 )
                 loss = outputs.loss / self.gradient_accumulation_steps
 
-                loss.backward()
-                self.optimizer.step()
+            self.scaler.scale(loss).backward()
+
+            if (step + 1) % self.gradient_accumulation_steps == 0:
+                # unscale gradients
+                if self.max_grad_norm is not None:  # grad_clip_norm
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(), self.max_grad_norm
+                    )
+
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
                 self.scheduler.step()
-                self.optimizer.zero_grad()
-
-            total_loss += loss.item() * self.gradient_accumulation_steps
-            running_loss = total_loss / (step + 1)
-
-            # progress_bar.set_postfix({"loss": running_loss})
-            wandb.log(
-                {
-                    "train/step_loss": running_loss,
-                    "train/learning_rate": self.scheduler.get_last_lr()[0],
-                }
+                self.optimizer.zero_grad(set_to_none=True)
+        else:
+            outputs = self.model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                images=images,
+                labels=labels,
             )
+            loss = outputs.loss
 
-        progress_bar.close()
-        return total_loss / len(self.train_dataloader)
+            loss.backward()
+            self.optimizer.step()
+            self.scheduler.step()
+            self.optimizer.zero_grad()
+
+        return outputs
 
     @torch.inference_mode()
-    def evaluate(self, epoch, num_epochs):
+    def evaluate(self, step):
+        if (
+            self.train_dataloader == None
+            or self.val_dataloader == None
+            or self.optimizer == None
+            or self.scheduler == None
+        ):
+            self.lazy_init_training_objects()
+
         self.model.eval()
         self.metric.reset()
 
-        progress_bar = tqdm(
-            self.val_dataloader, desc=f"Eval/Epoch {epoch+1}/{num_epochs}"
-        )
+        progress_bar = tqdm(self.val_dataloader, desc=f"Eval/Step {step}", leave=False)#, position=1, leave=True)
 
         for batch in progress_bar:
             # Generate predictions
@@ -194,13 +247,25 @@ class Trainer:
             # Update metrics
             self.metric.update(predicted_boxes, target_boxes)
 
+        #progress_bar.clear()
+        progress_bar.close()
+        self.model.train()
+
         # Compute final metrics
         metrics = self.metric.compute()
-        return {
+        val_metrics = {
             "map": metrics["map"].item(),
             "map_50": metrics["map_50"].item(),
             "map_75": metrics["map_75"].item(),
         }
+
+        wandb.log(
+            {
+                **{f"val/{k}": v for k, v in val_metrics.items()},
+            },
+            step=step,
+        )
+        return val_metrics
 
     def save_checkpoint(self, epoch, metrics, is_best=False):
         checkpoint = {
@@ -237,7 +302,9 @@ class Trainer:
             subset_size=self.config.num_samples,
         )
         self.val_dataloader = build_val_dataloader(
-            config=self.config, model=self.model, subset_size=self.config.num_samples
+            config=self.config,
+            model=self.model,
+            subset_size=self.config.num_samples,
         )
         epochs = self.config.epochs
 
@@ -259,45 +326,6 @@ class Trainer:
             num_warmup_steps=num_training_steps * self.config.warmup_ratio,
             num_training_steps=num_training_steps,
         )
-
-    def train(self, num_epochs=None):
-        if (
-            self.train_dataloader == None
-            or self.val_dataloader == None
-            or self.optimizer == None
-            or self.scheduler == None
-        ):
-            self.lazy_init_training_objects()
-
-        best_map = 0
-
-        if num_epochs == None:
-            num_epochs = self.config.epochs
-
-        for epoch in range(num_epochs):
-            # Training loop
-            train_loss = self.train_epoch(epoch, num_epochs)
-
-            # Validation
-            val_metrics = self.evaluate(epoch, num_epochs)
-
-            log.info(val_metrics)
-            wandb.log(
-                {
-                    "epoch": epoch,
-                    "train/epoch_loss": train_loss,
-                    **{f"val/{k}": v for k, v in val_metrics.items()},
-                }
-            )
-
-            is_best = val_metrics["map"] > best_map
-            if is_best:
-                best_map = val_metrics["map"]
-
-            # save model projection layer after each epoch with current timestamp and epoch
-            self.save_checkpoint(epoch, val_metrics, is_best)
-
-            log.info(f"Epoch {epoch+1}/{num_epochs}, Loss: {train_loss}")
 
 
 @hydra.main(config_path="../conf", config_name="train", version_base=None)
@@ -326,7 +354,17 @@ def run_training(config: ExperimentConfig):
     )
 
     # Train model
-    trainer.train()
+    if config.train:
+        best_result = trainer.train()
+        log.info(f"Best result: {best_result}")
+
+    if config.evaluate:
+        # Evaluate model
+        eval_results = trainer.evaluate(0)
+        wandb.log(eval_results)
+        wandb.summary.update(eval_results)
+
+    wandb.finish()
 
 
 if __name__ == "__main__":
