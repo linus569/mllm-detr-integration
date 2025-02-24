@@ -152,9 +152,9 @@ def parse_model_output(text):
                 return None
             if "class" not in obj or "bbox" not in obj:
                 return None
-            if not isinstance(obj["bbox"], list) or len(obj["bbox"]) < 4:
+            if not isinstance(obj["bbox"], list):
                 return None
-            if not all(isinstance(x, (int, float)) for x in obj["bbox"]):
+            if not all((isinstance(bbox, (int, float)) and len(bbox) == 4 for bbox in bboxes) for bboxes in obj["bbox"]):
                 return None
 
         return objects
@@ -255,10 +255,9 @@ def unnormalize_bbox(bbox: torch.Tensor, width: int, height: int) -> torch.Tenso
 class JSONStoppingCriteria(StoppingCriteria):
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
-        self.end_sequence = self.tokenizer.encode("]")[
-            0
-        ]  # Get token ID for closing bracket
+        self.end_sequence = self.tokenizer.encode("]]}]")  # Get token ID for closing bracket
 
     def __call__(self, input_ids, scores, **kwargs):
-        # Stop if we find the closing bracket
-        return input_ids[0][-1] == self.end_sequence
+        # Stop if we find the 4 closing bracket
+        return input_ids[0][-4:] == self.end_sequence
+        #return input_ids[0][-1] == self.end_sequence

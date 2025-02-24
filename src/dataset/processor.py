@@ -94,18 +94,17 @@ class Processor:
         instances = np.random.permutation(instances).tolist()
         bbox_str = json.dumps(instances)
 
-        # Combine all elements with proper spacing
-        combined_text = (f"{image_tokens} " f"Objects: {bbox_str}").strip()
-
         if prompt is None:
-            prompt = "What is shown in this image? Describe it in detail."
-            prompt = "Detect all objects in this image! Only output list of json objects that are predicted. Example: [{'class': 'dog', 'bbox': [0.1, 0.2, 0.3, 0.4]}, {'class': 'cat', 'bbox': [0.5, 0.6, 0.7, 0.8]}]"
+            # prompt = "Detect all objects in this image! Only output list of json objects that are predicted. Example: [{'class': 'dog', 'bbox': [0.1, 0.2, 0.3, 0.4]}, {'class': 'cat', 'bbox': [0.5, 0.6, 0.7, 0.8]}]" #TODO: example and how string is generated is different
+            # prompt = "Detect all objects in this image! Only output list of json objects that are predicted. BBox in YOLO format. Example: [{'class': ['class_1', 'class_2'], 'bbox': [[bbox_class_1], [[bbox_class_2]]}]" #TODO: example and how string is generated is different
+            prompt = "Given the image, identify the objects present and provide their class indices and bounding boxes in the following format: [{'class': [<class_index_1>, <class_index_2>, ...], 'bbox': [[<x_min_1>, <y_min_1>, <x_max_1>, <y_max_1>], [<x_min_2>, <y_min_2>, <x_max_2>, <y_max_2>], ...]}]"
 
         # system_text = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
         # system_text = "<|im_start|>system\nYou are a helpful assistant trained to detect objects in images and output their locations in a standardized JSON format.<|im_end|>\n"
         # user_text = f"<|im_start|>user\n{image_tokens}\n{prompt}<|im_end|>\n"
         # assistent_text = "<|im_start|>assistant\n"
 
+        # Combine all elements with chat structure
         combined_text = (
             "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
             "<|im_start|>user\n"
