@@ -49,7 +49,7 @@ class Processor:
                 ToTensorV2(),
             ],
             bbox_params=A.BboxParams(
-                format="pascal_voc", label_fields=["class_labels"]
+                format="pascal_voc", label_fields=["class_labels", "class_ids"]
             ),
         )
 
@@ -63,7 +63,7 @@ class Processor:
     def prepare_text_input(
         self,
         num_img_tokens: int,
-        instance_classes: List[str],
+        instance_classes_str: List[str],
         instance_bboxes: List[List[float]],
         captions: Union[str, List[str]],
         num_image_patches: int = 0,
@@ -74,7 +74,7 @@ class Processor:
 
         Args:
             num_img_tokens: Number of image tokens to include
-            instance_classes: List of class names for each instance
+            instance_classes_str: List of class names for each instance
             instance_bboxes: List of bounding boxes [x1, y1, x2, y2]
             captions: Image caption(s)
             num_image_patches: Number of image patches in the batch
@@ -88,8 +88,8 @@ class Processor:
         # Combine bboxes and classes into a list of instances
         # TODO: change bbox to special token instead of json
         instances = []
-        for cls, bbox in zip(instance_classes, instance_bboxes):
-            instances.append({"class": cls.tolist(), "bbox": bbox.tolist()})
+        for classes, bbox in zip(instance_classes_str, instance_bboxes):
+            instances.append({"class": classes, "bbox": bbox.tolist()})
         # randomize order of instances
         instances = np.random.permutation(instances).tolist()
         bbox_str = json.dumps(instances)
@@ -97,7 +97,7 @@ class Processor:
         if prompt is None:
             # prompt = "Detect all objects in this image! Only output list of json objects that are predicted. Example: [{'class': 'dog', 'bbox': [0.1, 0.2, 0.3, 0.4]}, {'class': 'cat', 'bbox': [0.5, 0.6, 0.7, 0.8]}]" #TODO: example and how string is generated is different
             # prompt = "Detect all objects in this image! Only output list of json objects that are predicted. BBox in YOLO format. Example: [{'class': ['class_1', 'class_2'], 'bbox': [[bbox_class_1], [[bbox_class_2]]}]" #TODO: example and how string is generated is different
-            prompt = "Given the image, identify the objects present and provide their class indices and bounding boxes in the following format: [{'class': [<class_index_1>, <class_index_2>, ...], 'bbox': [[<x_min_1>, <y_min_1>, <x_max_1>, <y_max_1>], [<x_min_2>, <y_min_2>, <x_max_2>, <y_max_2>], ...]}]"
+            prompt = "Given the image, identify the objects present and provide their class indices and bounding boxes in the following format: [{'class': [<class_name_1>, <class_name_2>, ...], 'bbox': [[<x_min_1>, <y_min_1>, <x_max_1>, <y_max_1>], [<x_min_2>, <y_min_2>, <x_max_2>, <y_max_2>], ...]}]"
 
         # system_text = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
         # system_text = "<|im_start|>system\nYou are a helpful assistant trained to detect objects in images and output their locations in a standardized JSON format.<|im_end|>\n"
@@ -161,6 +161,7 @@ class Processor:
         transformed_images = []
         transformed_bboxes = []
         transformed_classes = []
+        transformed_classes_id = []
 
         for sample in batch:
             # # Check if x_max > x_min and y_max > y_min
@@ -183,18 +184,23 @@ class Processor:
             sample["instance_bboxes"] = [
                 sample["instance_bboxes"][i] for i in valid_indices
             ]
-            sample["instance_classes"] = [
-                sample["instance_classes"][i] for i in valid_indices
+            sample["instance_classes_str"] = [
+                sample["instance_classes_str"][i] for i in valid_indices
+            ]
+            sample["instance_classes_id"] = [
+                sample["instance_classes_id"][i] for i in valid_indices
             ]
 
             transformed = self.bbox_transform(
                 image=np.array(sample["image"]),
                 bboxes=sample["instance_bboxes"],
-                class_labels=sample["instance_classes"],
+                class_labels=sample["instance_classes_str"],
+                class_ids=sample["instance_classes_id"],
             )
             transformed_images.append(transformed["image"])
-            transformed_classes.append(
-                torch.tensor(transformed["class_labels"], dtype=torch.int64)
+            transformed_classes.append(transformed["class_labels"])
+            transformed_classes_id.append(
+                torch.tensor(transformed["class_ids"], dtype=torch.int64)
             )
 
             # Normalize values of bboxes
@@ -207,10 +213,6 @@ class Processor:
             ]
             transformed_bboxes.append(torch.tensor(norm_bboxes, dtype=torch.float16))
 
-        instance_classes_id = [
-            torch.tensor(sample["instance_classes_id"], dtype=torch.int64)
-            for sample in batch
-        ]
         images = torch.stack(transformed_images)
 
         # Prepare text inputs
@@ -270,14 +272,13 @@ class Processor:
         labels[labels == image_token_id] = -100  # Mask image tokens
         labels[loss_masks == 0] = -100  # Mask everything except the answer tokens
 
-
         return {
             "input_ids": tokenized["input_ids"],
             "attention_mask": tokenized["attention_mask"],
             "images": images,
             "labels": labels,
             "instance_bboxes": transformed_bboxes,
-            "instance_classes_id": instance_classes_id,
+            "instance_classes_id": transformed_classes_id,
         }
 
     def collate_fn(self, batch: List[Dict]) -> Dict[str, torch.Tensor]:

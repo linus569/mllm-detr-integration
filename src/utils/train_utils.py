@@ -196,13 +196,15 @@ def parse_model_output_to_boxes(text, dataset, index, device):
             log.error(f"Failed ouput parsing: {predictions} 'bbox' and 'class' lists have different lengths")
             failed_conversion += 1
         else:
-            for class_id, bbox in zip(classes, bboxes):
+            for class_name, bbox in zip(classes, bboxes):
                 try:
                     # Convert bbox to tensor
                     if len(bbox) == 4:
                         pred_boxes.append(
                             torch.tensor(bbox, dtype=torch.float32).to(device)
                         )
+                        #class_name to id
+                        class_id = dataset.cat_name_to_id[class_name]
                         pred_labels.append(class_id)
                         pred_scores.append(1.0)
                 except (ValueError, TypeError) as e:

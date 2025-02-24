@@ -47,23 +47,22 @@ class COCODataset(Dataset):
         image_path = f"{self.image_dir}/{image_info['file_name']}"
         image = Image.open(image_path).convert("RGB")
 
-        instance_classes = [ann["category_id"] for ann in anns]
+        instance_classes_id = [ann["category_id"] for ann in anns]
         instance_bboxes = [ann["bbox"] for ann in anns]
         captions = [ann["caption"] for ann in anns if "caption" in ann]
 
         # convert bboxes from COCO format (x,y,w,h) to (x_min, y_min, x_max, y_max)
         instance_bboxes = [[x, y, x + w, y + h] for x, y, w, h in instance_bboxes]
 
-        instance_classes_id = [
-            self.cat_name_to_id[self.index_to_cat_name[cat_id]]
-            for cat_id in instance_classes
+        instance_classes_str = [
+            self.index_to_cat_name[cat_id] for cat_id in instance_classes_id
         ]
 
         return {
             "image": image,
-            "instance_classes": instance_classes,
-            "instance_bboxes": instance_bboxes,
             "instance_classes_id": instance_classes_id,
+            "instance_classes_str": instance_classes_str,
+            "instance_bboxes": instance_bboxes,
             "captions": captions,
         }
 

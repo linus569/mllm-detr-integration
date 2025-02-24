@@ -198,24 +198,42 @@ class Trainer:
         self.model.eval()
         self.metric.reset()
 
-        progress_bar = tqdm(self.val_dataloader, desc=f"Eval/Step {step}", leave=False)#, position=1, leave=True)
+        progress_bar = tqdm(self.val_dataloader, desc=f"Eval/Step {step}") #, leave=False)#, position=1, leave=True)
 
         for batch in progress_bar:
             # Generate predictions
-            outputs = self.model.generate(
-                input_ids=batch["input_ids"].to(self.device),
-                attention_mask=batch["attention_mask"].to(self.device),
-                image=batch["images"].to(self.device),
-                stopping_criteria=[JSONStoppingCriteria(self.model.tokenizer)],
-                # temperature=0.0,
-                # do_sample=False,
-                # max_new_tokens=800,
-                do_sample=True,
-                temperature=0.5,
-                top_p = 0.9,
-                top_k = 0,
-    
-            )
+            if self.device == "cuda":
+                with autocast(device_type=self.device, enabled=False):
+                    outputs = self.model.generate(
+                        input_ids=batch["input_ids"].to(self.device),
+                        attention_mask=batch["attention_mask"].to(self.device),
+                        image=batch["images"].to(self.device),
+                        stopping_criteria=[JSONStoppingCriteria(self.model.tokenizer)],
+                        # temperature=0.0,
+                        # do_sample=False,
+                        # max_new_tokens=800,
+                        do_sample=True,
+                        temperature=0.8,
+                        top_p = 0.9,
+                        top_k = 50,
+            
+                    )
+
+            else:
+                outputs = self.model.generate(
+                    input_ids=batch["input_ids"].to(self.device),
+                    attention_mask=batch["attention_mask"].to(self.device),
+                    image=batch["images"].to(self.device),
+                    stopping_criteria=[JSONStoppingCriteria(self.model.tokenizer)],
+                    # temperature=0.0,
+                    # do_sample=False,
+                    # max_new_tokens=800,
+                    do_sample=True,
+                    temperature=0.8,
+                    top_p = 0.9,
+                    top_k = 50,
+        
+                )
 
             # Decode predictions
             generated_text = self.model.tokenizer.batch_decode(
@@ -341,6 +359,7 @@ def run_training(config: ExperimentConfig):
     log.info(f"Using device: {device}")
 
     model = VisionLanguageModel(model_name=config.model_name).to(device)
+    model = torch.compile(model) # test if this works
 
     # Init wandb
     wandb.init(
