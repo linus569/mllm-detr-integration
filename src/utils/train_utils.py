@@ -149,12 +149,16 @@ def parse_model_output(text):
         # Validate format of each object
         for obj in objects:
             if not isinstance(obj, dict):
+                log.error(f"Failed ouput parsing: {obj} is not a dictionary")
                 return None
             if "class" not in obj or "bbox" not in obj:
+                log.error(f"Failed ouput parsing: {obj} is missing 'class' or 'bbox' keys")
                 return None
-            if not isinstance(obj["bbox"], list):
+            if not isinstance(obj["bbox"], list) or not isinstance(obj["class"], list):
+                log.error(f"Failed ouput parsing: {obj} 'bbox' or 'class' is not a list")
                 return None
             if not all((isinstance(bbox, (int, float)) and len(bbox) == 4 for bbox in bboxes) for bboxes in obj["bbox"]):
+                log.error(f"Failed ouput parsing: {obj} 'bbox' elements are not a list of 4 numbers")
                 return None
 
         return objects
@@ -181,34 +185,42 @@ def parse_model_output_to_boxes(text, dataset, index, device):
     predictions = parse_model_output(text_to_parse)
 
     if predictions is not None:
-        for pred in predictions:
-            try:
-                # Convert bbox to tensor
-                bbox = pred.get("bbox", [])
-                if len(bbox) == 4:
-                    pred_boxes.append(
-                        torch.tensor(bbox, dtype=torch.float32).to(device)
-                    )
+        if isinstance(predictions, list):
+            predictions = predictions[0]
 
-                    # Convert class name to index
-                    class_name = pred.get("class", "")
-                    class_id = dataset.cat_name_to_id.get(
-                        class_name, 0
-                    )  # Default to 0 if not found
-                    pred_labels.append(class_id)
+        classes = predictions.get("class")
+        bboxes = predictions.get("bbox")
 
-                    pred_scores.append(1.0)
-            except (ValueError, TypeError) as e:
-                failed_conversion += 1
+        # check if same length 
+        if len(classes) != len(bboxes):
+            log.error(f"Failed ouput parsing: {predictions} 'bbox' and 'class' lists have different lengths")
+            failed_conversion += 1
+        else:
+            for class_id, bbox in zip(classes, bboxes):
+                try:
+                    # Convert bbox to tensor
+                    if len(bbox) == 4:
+                        pred_boxes.append(
+                            torch.tensor(bbox, dtype=torch.float32).to(device)
+                        )
+                        pred_labels.append(class_id)
+                        pred_scores.append(1.0)
+                except (ValueError, TypeError) as e:
+                    failed_conversion += 1
+    else:
+        failed_conversion += 1
+    
 
     # TODO: do something with failed_conversion print or log or something
+    if failed_conversion > 0:
+        log.error(f"Failed to convert {failed_conversion} outputs to bounding boxes")
 
     bbox = torch.stack(pred_boxes) if pred_boxes else torch.zeros((0, 4))
     bbox = unnormalize_bbox(
         bbox.to(device), width=384, height=384
     )  # TODO: get height and width from config
 
-    # TODO: addd index again for batches
+    # TODO: add index again for batches
     # Create return tensors with proper types
     return {
         "boxes": bbox,

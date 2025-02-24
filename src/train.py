@@ -207,9 +207,14 @@ class Trainer:
                 attention_mask=batch["attention_mask"].to(self.device),
                 image=batch["images"].to(self.device),
                 stopping_criteria=[JSONStoppingCriteria(self.model.tokenizer)],
-                temperature=0.0,
-                do_sample=False,
-                max_new_tokens=800,
+                # temperature=0.0,
+                # do_sample=False,
+                # max_new_tokens=800,
+                do_sample=True,
+                temperature=0.5,
+                top_p = 0.9,
+                top_k = 0,
+    
             )
 
             # Decode predictions
