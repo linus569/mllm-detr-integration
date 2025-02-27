@@ -27,6 +27,7 @@ from utils.train_utils import (
 )
 from utils.train_metrics import TrainMetrics
 
+hydra.verbose = True
 log = logging.getLogger(__name__)
 
 
@@ -147,7 +148,7 @@ class Trainer:
         return best_map
 
     def train_step(self, step, input_ids, attention_mask, images, labels):
-        if self.device == "cuda":
+        if torch.cuda.is_available():
             with autocast(
                 device_type=self.device.type
             ):  # TODO: dtype = torch.bfloat16, more stable
@@ -218,7 +219,7 @@ class Trainer:
 
         for batch in progress_bar:
             # Generate predictions
-            if self.device == "cuda":
+            if torch.cuda.is_available():
                 with autocast(device_type=self.device, enabled=False):
                     outputs = self.model.generate(
                         input_ids=batch["input_ids"].to(self.device),
