@@ -34,7 +34,8 @@ class Processor:
         self.num_img_tokens = num_img_tokens
         self.train = train
         self.img_size = img_size
-        self.max_length = self.config.max_tokens  # None, 512
+        self.max_length = self.config.max_tokens
+        self.pad_to_multiple_of = self.config.pad_to_multiple_of
 
         self.image_token = "<image>"  # TODO: config
         self.answer_start_token = "<|im_start|>assistant\n"
@@ -97,7 +98,8 @@ class Processor:
         if prompt is None:
             # prompt = "Detect all objects in this image! Only output list of json objects that are predicted. Example: [{'class': 'dog', 'bbox': [0.1, 0.2, 0.3, 0.4]}, {'class': 'cat', 'bbox': [0.5, 0.6, 0.7, 0.8]}]" #TODO: example and how string is generated is different
             # prompt = "Detect all objects in this image! Only output list of json objects that are predicted. BBox in YOLO format. Example: [{'class': ['class_1', 'class_2'], 'bbox': [[bbox_class_1], [[bbox_class_2]]}]" #TODO: example and how string is generated is different
-            prompt = "Given the image, identify the objects present and provide their class indices and bounding boxes in the following format: [{'class': [<class_name_1>, <class_name_2>, ...], 'bbox': [[<x_min_1>, <y_min_1>, <x_max_1>, <y_max_1>], [<x_min_2>, <y_min_2>, <x_max_2>, <y_max_2>], ...]}]"
+            # prompt = "Given the image, identify the objects present and provide their class indices and bounding boxes in the following format: [{'class': [<class_name_1>, <class_name_2>, ...], 'bbox': [[<x_min_1>, <y_min_1>, <x_max_1>, <y_max_1>], [<x_min_2>, <y_min_2>, <x_max_2>, <y_max_2>], ...]}]"
+            prompt = "Given the image, identify the objects present and provide their class indices and bounding boxes in the following format: [{'class': <class_name_1>, 'bbox': [<x_min_1>, <y_min_1>, <x_max_1>, <y_max_1>]}, {'class': <class_name_2>, 'bbox': [<x_min_2>, <y_min_2>, <x_max_2>, <y_max_2>]}, ...]"
 
         # system_text = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
         # system_text = "<|im_start|>system\nYou are a helpful assistant trained to detect objects in images and output their locations in a standardized JSON format.<|im_end|>\n"
@@ -227,12 +229,20 @@ class Processor:
             for sample in batch
         ]
 
+        bbox_str = [json.dumps({"class": classes, "bbox": bbox.tolist()}) for classes, bbox in zip(transformed_classes, transformed_bboxes)]
+
+        if self.train:
+            self.tokenizer.padding_side = "right"
+        else:
+            self.tokenizer.padding_side = "left"
+
         # Tokenize texts
         tokenized = self.tokenizer(
             text_inputs,
             padding=True,
             truncation=True,
             max_length=self.max_length,
+            pad_to_multiple_of=self.pad_to_multiple_of,
             return_tensors="pt",
         )
 
@@ -241,6 +251,11 @@ class Processor:
         input_ids = tokenized["input_ids"]
         input_ids_np = input_ids.cpu().numpy()
         tokenized_prompt_len = len(self.tokenized_start_prompt)
+
+        # with np.printoptions(threshold=np.inf):
+        #     print(input_ids_np)
+        #     encoded = self.tokenizer.decode(input_ids_np[0])
+        #     print(encoded)
 
         # Initialize loss masks (same shape as input_ids)
         loss_masks = np.zeros_like(input_ids_np)
@@ -259,6 +274,7 @@ class Processor:
 
                 if match_idx.size > 0:
                     answer_start = match_idx[0] + tokenized_prompt_len
+                    #print(loss_masks[i].shape)
                     loss_masks[i, answer_start:] = 1  # Apply mask only to answer tokens
 
         # Convert loss masks back to PyTorch tensors
@@ -279,6 +295,7 @@ class Processor:
             "labels": labels,
             "instance_bboxes": transformed_bboxes,
             "instance_classes_id": transformed_classes_id,
+            "bbox_str": bbox_str,
         }
 
     def collate_fn(self, batch: List[Dict]) -> Dict[str, torch.Tensor]:

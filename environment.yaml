@@ -32,4 +32,7 @@ dependencies:
     - pycocotools
     - scikit-learn
     - accelerate
+    - pytest
+    - pytest-cov
+    - nltk
     - git+https://github.com/LLaVA-VL/LLaVA-NeXT.git

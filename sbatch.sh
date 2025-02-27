@@ -7,7 +7,7 @@
 #SBATCH --mail-type=ALL
 #SBATCH --partition=universe
 #SBATCH --qos=master-queuesave
-#SBATCH --time=0-10:00:00
+#SBATCH --time=0-24:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16 
 #SBATCH --mem=48G

@@ -5,6 +5,7 @@ import time
 import hydra
 import numpy as np
 import torch
+import wandb
 from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig, OmegaConf
 from torch import autocast
@@ -14,7 +15,6 @@ from torchmetrics.detection.mean_ap import MeanAveragePrecision
 from tqdm import tqdm
 from transformers import get_scheduler
 
-import wandb
 from dataset.dataset import DatasetConfig
 from model.model import VisionLanguageModel
 from utils.train_utils import (
@@ -25,6 +25,7 @@ from utils.train_utils import (
     parse_model_output_to_boxes,
     unnormalize_bbox,
 )
+from utils.train_metrics import TrainMetrics
 
 log = logging.getLogger(__name__)
 
@@ -46,13 +47,14 @@ class Trainer:
         self.scheduler = None
 
         self.checkpoint_dir = config.checkpoint_dir
-        self.gradient_accumulation_steps = config.gradient_accumulation_steps
+        self.gradient_accumulation_steps = config.total_batch_size // config.batch_size
         self.max_grad_norm = config.max_grad_norm
 
         # Initialize metric once
-        self.metric = MeanAveragePrecision(box_format="xyxy", iou_type="bbox").to(
-            device
-        )
+        # self.metric = MeanAveragePrecision(box_format="xyxy", iou_type="bbox").to(
+        #     device
+        # )
+        self.metric = TrainMetrics(device)
 
         # Mixed precision
         self.scaler = GradScaler()
@@ -135,7 +137,7 @@ class Trainer:
                     # save model projection layer after each epoch with current timestamp and epoch
                     self.save_checkpoint(epoch, val_metrics, is_best)
 
-                    #progress_bar.refresh()
+                    # progress_bar.refresh()
                     progress_bar.reset()
 
             train_loss = total_loss / len(self.train_dataloader)
@@ -146,7 +148,9 @@ class Trainer:
 
     def train_step(self, step, input_ids, attention_mask, images, labels):
         if self.device == "cuda":
-            with autocast(device_type=self.device.type):
+            with autocast(
+                device_type=self.device.type
+            ):  # TODO: dtype = torch.bfloat16, more stable
                 outputs = self.model(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
@@ -186,7 +190,7 @@ class Trainer:
         return outputs
 
     @torch.inference_mode()
-    def evaluate(self, step):
+    def evaluate(self, step, full_eval=False):
         if (
             self.train_dataloader == None
             or self.val_dataloader == None
@@ -195,10 +199,22 @@ class Trainer:
         ):
             self.lazy_init_training_objects()
 
+        if full_eval:
+            val_dataloader = build_val_dataloader(
+                config=self.config,
+                model=self.model,
+                subset_size=None,
+            )
+        else:
+            # TODO: currently always same val_dataloader subset, init here again for random each eval
+            val_dataloader = self.val_dataloader
+
         self.model.eval()
         self.metric.reset()
 
-        progress_bar = tqdm(self.val_dataloader, desc=f"Eval/Step {step}") #, leave=False)#, position=1, leave=True)
+        progress_bar = tqdm(
+            val_dataloader, desc=f"Eval/Step {step}"
+        )  # , leave=False)#, position=1, leave=True)
 
         for batch in progress_bar:
             # Generate predictions
@@ -214,9 +230,8 @@ class Trainer:
                         # max_new_tokens=800,
                         do_sample=True,
                         temperature=0.8,
-                        top_p = 0.9,
-                        top_k = 50,
-            
+                        top_p=0.9,
+                        top_k=50,
                     )
 
             else:
@@ -225,14 +240,10 @@ class Trainer:
                     attention_mask=batch["attention_mask"].to(self.device),
                     image=batch["images"].to(self.device),
                     stopping_criteria=[JSONStoppingCriteria(self.model.tokenizer)],
-                    # temperature=0.0,
-                    # do_sample=False,
-                    # max_new_tokens=800,
                     do_sample=True,
-                    temperature=0.8,
-                    top_p = 0.9,
-                    top_k = 50,
-        
+                    temperature=self.config.temperature,
+                    top_p=0.9,
+                    top_k=50,
                 )
 
             # Decode predictions
@@ -243,12 +254,9 @@ class Trainer:
             # print(generated_text)
 
             # Parse model ouput to bbox and lables
-            predicted_boxes = [
-                parse_model_output_to_boxes(
-                    generated_text, self.val_dataloader.dataset, i, self.device
-                )
-                for i in range(len(batch["instance_bboxes"]))
-            ]
+            predicted_boxes = parse_model_output_to_boxes(
+                generated_text, val_dataloader.dataset, self.device
+            )
 
             target_boxes = [
                 {
@@ -268,20 +276,15 @@ class Trainer:
             # print(target_boxes)
 
             # Update metrics
-            self.metric.update(predicted_boxes, target_boxes)
+            self.metric.update(predicted_boxes, target_boxes, generated_text=generated_text, target_texts=batch["bbox_str"])
 
-        #progress_bar.clear()
+        # progress_bar.clear()
         progress_bar.close()
         self.model.train()
 
         # Compute final metrics
-        metrics = self.metric.compute()
-        val_metrics = {
-            "map": metrics["map"].item(),
-            "map_50": metrics["map_50"].item(),
-            "map_75": metrics["map_75"].item(),
-        }
-
+        val_metrics = self.metric.compute()
+        print(val_metrics)
         wandb.log(
             {
                 **{f"val/{k}": v for k, v in val_metrics.items()},
@@ -342,7 +345,7 @@ class Trainer:
         trainable_params = [{"params": self.model.projector.parameters()}]
         self.optimizer = AdamW(trainable_params, lr=self.config.lr)
 
-        num_training_steps = len(self.train_dataloader) * epochs
+        num_training_steps = len(self.train_dataloader) * epochs // self.gradient_accumulation_steps
         self.scheduler = get_scheduler(
             "cosine",
             optimizer=self.optimizer,
@@ -355,20 +358,21 @@ class Trainer:
 def run_training(config: ExperimentConfig):
     log.info(OmegaConf.to_yaml(config))
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    log.info(f"Using device: {device}")
-
-    model = VisionLanguageModel(model_name=config.model_name).to(device)
-    model = torch.compile(model) # test if this works
-
     # Init wandb
     wandb.init(
         # set the wandb project where this run will be logged
         project="object-dection-vlm",
         # track hyperparameters and run metadata
         config=OmegaConf.to_container(config, resolve=True, throw_on_missing=False),
+        # settings=wandb.Settings(start_method='thread', init_timeout=300, _service_wait=300),
         mode="disabled" if config.debug else "online",
     )
+
+    device = torch.device("cuda" if torch.cuda.is_available() else config.device)
+    log.info(f"Using device: {device}")
+
+    model = VisionLanguageModel(model_name=config.model_name).to(device)
+    # model = torch.compile(model) # TODO: works, check if speed difference
 
     # Initialize trainer
     trainer = Trainer(
@@ -384,7 +388,7 @@ def run_training(config: ExperimentConfig):
 
     if config.evaluate:
         # Evaluate model
-        eval_results = trainer.evaluate(0)
+        eval_results = trainer.evaluate(0, full_eval=True)
         wandb.log(eval_results)
         wandb.summary.update(eval_results)
 

@@ -11,14 +11,17 @@ model_name: 'lmms-lab/llava-onevision-qwen2-0.5b-si'
 checkpoint_dir: '/u/home/salzmann/Documents/dev/master-thesis/checkpoints'
 
 batch_size: 2
+total_batch_size: 128 # tbs/bs = grad acum steps
 num_samples: null # use full dataset
-val_num_samples: 1000
-val_freq: 10000
+val_num_samples: 100
+val_freq: 20000
 print_freq: 50
 epochs: 1
-lr: 5e-5
+lr: 1e-3 #5e-5
 warmup_ratio: 0.1
 weight_decay: null # not used
-gradient_accumulation_steps: 64
 max_grad_norm: null
-max_tokens: 3000
+max_tokens: 3200
+pad_to_multiple_of: 128
+
+temperature: 0.3

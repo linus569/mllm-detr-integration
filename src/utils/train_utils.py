@@ -49,8 +49,11 @@ class ExperimentConfig:
     num_samples: Optional[int] = None
     val_num_samples: Optional[int] = None
     max_tokens: int = MISSING
+    pad_to_multiple_of: Optional[int] = None
 
     batch_size: int = MISSING
+    total_batch_size: int = MISSING
+    
     epochs: int = MISSING
     # max_steps: Optional[int] = None
     # max_epochs: Optional[int] = None
@@ -59,7 +62,6 @@ class ExperimentConfig:
     # warmup_lr: Optional[float] = MISSING
     warmup_ratio: float = MISSING
     weight_decay: Optional[float] = MISSING
-    gradient_accumulation_steps: int = MISSING
     max_grad_norm: Optional[float] = MISSING
     # grad_clip_norm: Optional[float] = MISSING
     # early_stopping_patience: Optional[int] = None
@@ -75,6 +77,8 @@ class ExperimentConfig:
     debug: bool = False
     # compile: bool = True
     save_components: List[str] = field(default_factory=list)
+
+    temperature: float = MISSING
 
 
 def build_train_dataloader(config: ExperimentConfig, model, subset_size=None):
@@ -147,96 +151,103 @@ def parse_model_output(text):
         objects = json.loads(json_text)
 
         # Validate format of each object
+        # TODO: improve raise exceptions
         for obj in objects:
             if not isinstance(obj, dict):
-                log.error(f"Failed ouput parsing: {obj} is not a dictionary")
+                # log.error(f"Failed ouput parsing: {obj} is not a dictionary")
                 return None
             if "class" not in obj or "bbox" not in obj:
-                log.error(f"Failed ouput parsing: {obj} is missing 'class' or 'bbox' keys")
+                # log.error(
+                #     f"Failed ouput parsing: {obj} is missing 'class' or 'bbox' keys"
+                # )
                 return None
-            if not isinstance(obj["bbox"], list) or not isinstance(obj["class"], list):
-                log.error(f"Failed ouput parsing: {obj} 'bbox' or 'class' is not a list")
+            if not isinstance(obj["bbox"], list) or not isinstance(obj["class"], str):
+                # log.error(
+                #     f"Failed ouput parsing: {obj} 'bbox' is not a list or 'class' is not a str"
+                # )
                 return None
-            if not all((isinstance(bbox, (int, float)) and len(bbox) == 4 for bbox in bboxes) for bboxes in obj["bbox"]):
-                log.error(f"Failed ouput parsing: {obj} 'bbox' elements are not a list of 4 numbers")
+            if (
+                not all(isinstance(bbox_val, (int, float)) for bbox_val in obj["bbox"])
+                or len(obj["bbox"]) != 4
+            ):
+                # log.error(
+                #     f"Failed ouput parsing: {obj} 'bbox' is not a list of 4 numbers"
+                # )
                 return None
 
         return objects
     except json.JSONDecodeError as e:
-        log.error(
-            f"Failed to parse model output text '{text}' (converted to json text '{json_text}') with error {e}"
-        )
+        # log.error(
+        #     f"Failed to parse model output text '{text}' (converted to json text '{json_text}') with error {e}"
+        # )
         return None
 
 
-def parse_model_output_to_boxes(text, dataset, index, device):
+def parse_model_output_to_boxes(batch_text, dataset, device):
     # TODO: improve code
     # parse generated ouput to extract boundingboxes
-    pred_boxes = []
-    pred_labels = []
-    pred_scores = []
+    batch_return = []
     failed_conversion = 0
 
     # Get original dataset from dataset if Subset is used
     if hasattr(dataset, "dataset"):
         dataset = dataset.dataset
 
-    text_to_parse = text[index].strip()
-    predictions = parse_model_output(text_to_parse)
+    for text in batch_text:
+        text_to_parse = text.strip()
+        predictions = parse_model_output(text_to_parse)
 
-    if predictions is not None:
-        if isinstance(predictions, list):
-            predictions = predictions[0]
+        text_boxes = []
+        text_labels = []
+        text_scores = []
 
-        classes = predictions.get("class")
-        bboxes = predictions.get("bbox")
+        if predictions is not None:
 
-        # check if same length 
-        if len(classes) != len(bboxes):
-            log.error(f"Failed ouput parsing: {predictions} 'bbox' and 'class' lists have different lengths")
-            failed_conversion += 1
+            for obj in predictions:
+                class_name = obj.get("class")
+                bbox = obj.get("bbox")
+
+                # Convert bbox to tensor
+                if len(bbox) == 4:
+                    text_boxes.append(
+                        torch.tensor(bbox, dtype=torch.float32).to(device)
+                    )
+                    # class_name to id
+                    class_id = dataset.cat_name_to_id.get(class_name, -1)
+                    text_labels.append(class_id)
+                    text_scores.append(1.0)
+
         else:
-            for class_name, bbox in zip(classes, bboxes):
-                try:
-                    # Convert bbox to tensor
-                    if len(bbox) == 4:
-                        pred_boxes.append(
-                            torch.tensor(bbox, dtype=torch.float32).to(device)
-                        )
-                        #class_name to id
-                        class_id = dataset.cat_name_to_id[class_name]
-                        pred_labels.append(class_id)
-                        pred_scores.append(1.0)
-                except (ValueError, TypeError) as e:
-                    failed_conversion += 1
-    else:
-        failed_conversion += 1
-    
+            failed_conversion += 1
+
+        # Create return tensors with proper types
+        text_bbox = torch.stack(text_boxes) if text_boxes else torch.zeros((0, 4))
+        # TODO: get height and width from config
+        text_bbox = unnormalize_bbox(text_bbox, width=384, height=384)
+        text_labels = (
+            torch.tensor(text_labels, dtype=torch.long, device=device)
+            if text_labels
+            else torch.zeros(0, dtype=torch.long).to(device)
+        )
+        text_scores = (
+            torch.tensor(text_scores, dtype=torch.float32, device=device)
+            if text_scores
+            else torch.zeros(0).to(device)
+        )
+
+        batch_return.append(
+            {
+                "boxes": text_bbox,
+                "labels": text_labels,
+                "scores": text_scores,
+            }
+        )
 
     # TODO: do something with failed_conversion print or log or something
     if failed_conversion > 0:
         log.error(f"Failed to convert {failed_conversion} outputs to bounding boxes")
 
-    bbox = torch.stack(pred_boxes) if pred_boxes else torch.zeros((0, 4))
-    bbox = unnormalize_bbox(
-        bbox.to(device), width=384, height=384
-    )  # TODO: get height and width from config
-
-    # TODO: add index again for batches
-    # Create return tensors with proper types
-    return {
-        "boxes": bbox,
-        "labels": (
-            torch.tensor(pred_labels, dtype=torch.long, device=device)
-            if pred_labels
-            else torch.zeros(0, dtype=torch.long).to(device)
-        ),
-        "scores": (
-            torch.tensor(pred_scores, dtype=torch.float32, device=device)
-            if pred_scores
-            else torch.zeros(0).to(device)
-        ),
-    }
+    return batch_return
 
 
 def unnormalize_bbox(bbox: torch.Tensor, width: int, height: int) -> torch.Tensor:
@@ -269,9 +280,12 @@ def unnormalize_bbox(bbox: torch.Tensor, width: int, height: int) -> torch.Tenso
 class JSONStoppingCriteria(StoppingCriteria):
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
-        self.end_sequence = self.tokenizer.encode("]]}]")  # Get token ID for closing bracket
+        self.end_sequence = self.tokenizer.encode(
+            "]}]<|im_end|>"
+        )  # Get token ID for closing bracket
+        self.length = len(self.end_sequence)
 
     def __call__(self, input_ids, scores, **kwargs):
-        # Stop if we find the 4 closing bracket
-        return input_ids[0][-4:] == self.end_sequence
-        #return input_ids[0][-1] == self.end_sequence
+        # Stop if we find the end sequence
+        return input_ids[0][-self.length :] == self.end_sequence
+        # return input_ids[0][-1] == self.end_sequence
