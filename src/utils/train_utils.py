@@ -80,6 +80,7 @@ class ExperimentConfig:
 
     temperature: float = MISSING
     use_amp: bool = MISSING # use automatic mixed precision
+    torch_dtype: Optional[str] = None
 
 
 def build_train_dataloader(config: ExperimentConfig, model, subset_size=None):
