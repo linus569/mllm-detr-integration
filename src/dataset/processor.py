@@ -278,7 +278,7 @@ class Processor:
 
         images = torch.stack(transformed_images)
 
-        if self.train and not torch.cuda.is_available(): # 
+        if self.train: # fast_att only allow left padding
             self.tokenizer.padding_side = "right"
         else:
             self.tokenizer.padding_side = "left"

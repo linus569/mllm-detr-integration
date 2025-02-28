@@ -17,7 +17,7 @@ class VisionLanguageModel(torch.nn.Module):
         self.model_name = model_name
 
         if torch.cuda.is_available():
-            attn_implementation = "flash_attention_2"
+            attn_implementation = None # "flash_attention_2"
             torch_dtype = torch.bfloat16
             #device_map = "auto"
         else:
