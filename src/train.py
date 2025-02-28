@@ -155,7 +155,7 @@ class Trainer:
     def train_step(self, step, input_ids, attention_mask, images, labels):
         with autocast(
             device_type=self.device.type,
-            dtype=torch.bfloat16,  # torch.bfloat16, more stable than float16
+            dtype=self.model.torch_dtype,  # torch.bfloat16, more stable than float16
             enabled=self.config.use_amp,
         ):
             outputs = self.model(
@@ -214,7 +214,7 @@ class Trainer:
             # Generate predictions
             with autocast(
                 device_type=self.device.type,
-                dtype=torch.bfloat16,
+                dtype=self.model.torch_dtype,
                 enabled=self.config.use_amp,
             ):
                 outputs = self.model.generate(
@@ -357,7 +357,7 @@ def run_training(config: ExperimentConfig):
     device = torch.device("cuda" if torch.cuda.is_available() else config.device)
     log.info(f"Using device: {device}")
 
-    model = VisionLanguageModel(model_name=config.model_name).to(device)
+    model = VisionLanguageModel(model_name=config.model_name, config=config).to(device)
     if not config.debug:
         model = torch.compile(model)  # 2.3 it/s without -> 4.5 it/s with
 

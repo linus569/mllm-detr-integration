@@ -11,22 +11,28 @@ log = logging.getLogger(__name__)
 
 
 class VisionLanguageModel(torch.nn.Module):
-    def __init__(self, model_name):
+    def __init__(self, model_name, config):
         super(VisionLanguageModel, self).__init__()
 
         self.model_name = model_name
 
         if torch.cuda.is_available():
             attn_implementation = None # "flash_attention_2"
-            torch_dtype = torch.bfloat16
             #device_map = "auto"
         else:
-            attn_implementation = torch_dtype = device_map = None
+            attn_implementation = device_map = None
+
+        if config.torch_dtype == "float16":
+            self.torch_dtype = torch.float16
+        elif config.torch_dtype == "bfloat16":
+            self.torch_dtype = torch.bfloat16
+        else:
+            self.torch_dtype = torch.float32
 
         # Get model components
         # TODO: device_map="auto", currently give warning, could be ignored https://github.com/huggingface/transformers/issues/31544
         self.model = LlavaQwenForCausalLM.from_pretrained(
-            model_name, torch_dtype=torch_dtype, attn_implementation=attn_implementation
+            model_name, torch_dtype=self.torch_dtype, attn_implementation=attn_implementation
         )
         self.image_encoder = self.model.get_vision_tower()
         self.projector = self.model.get_model().mm_projector
