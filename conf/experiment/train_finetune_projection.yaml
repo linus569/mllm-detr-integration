@@ -26,4 +26,4 @@ pad_to_multiple_of: 128
 
 temperature: 0.6
 use_amp: true
-torch_dtype: float16 #bfloat16
+torch_dtype: null #float16 #bfloat16

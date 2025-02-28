@@ -27,7 +27,7 @@ class VisionLanguageModel(torch.nn.Module):
         elif config.torch_dtype == "bfloat16":
             self.torch_dtype = torch.bfloat16
         else:
-            self.torch_dtype = torch.float32
+            self.torch_dtype = None
 
         # Get model components
         # TODO: device_map="auto", currently give warning, could be ignored https://github.com/huggingface/transformers/issues/31544
