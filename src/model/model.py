@@ -2,6 +2,8 @@ import logging
 
 import torch
 from llava.model.language_model.llava_qwen import LlavaQwenForCausalLM
+from transformers import AutoTokenizer
+
 
 from model.loss import masked_cross_entropy
 
@@ -17,18 +19,21 @@ class VisionLanguageModel(torch.nn.Module):
         if torch.cuda.is_available():
             attn_implementation = "flash_attention_2"
             torch_dtype = torch.bfloat16
+            device_map = "auto"
         else:
-            attn_implementation = torch_dtype = None
+            attn_implementation = torch_dtype = device_map = None
 
         # Get model components
         # TODO: device_map="auto", currently give warning, could be ignored https://github.com/huggingface/transformers/issues/31544
         self.model = LlavaQwenForCausalLM.from_pretrained(
-            model_name, torch_dtype=torch_dtype, attn_implementation=attn_implementation
+            model_name, device_map=device_map, torch_dtype=torch_dtype, attn_implementation=attn_implementation
         )
         self.image_encoder = self.model.get_vision_tower()
         self.projector = self.model.get_model().mm_projector
 
-        self._tokenizer = None
+        # self._tokenizer = None
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        self.model.resize_token_embeddings(len(self._tokenizer))
         self.image_token = "<image>"
 
         self.image_size = self.image_encoder.config.image_size
@@ -39,14 +44,14 @@ class VisionLanguageModel(torch.nn.Module):
 
         log.info("Model initialized")
 
-    @property
-    def tokenizer(self):
-        if self._tokenizer is None:
-            from transformers import AutoTokenizer
+    # @property # create error
+    # def tokenizer(self):
+    #     if self._tokenizer is None:
+    #         from transformers import AutoTokenizer
 
-            self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-            self.model.resize_token_embeddings(len(self._tokenizer))
-        return self._tokenizer
+    #         self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+    #         self.model.resize_token_embeddings(len(self._tokenizer))
+    #     return self._tokenizer
 
     def forward(self, input_ids, attention_mask, images, labels=None):
         # Image feature extraction
