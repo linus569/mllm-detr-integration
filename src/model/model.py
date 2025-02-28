@@ -19,14 +19,14 @@ class VisionLanguageModel(torch.nn.Module):
         if torch.cuda.is_available():
             attn_implementation = "flash_attention_2"
             torch_dtype = torch.bfloat16
-            device_map = "auto"
+            #device_map = "auto"
         else:
             attn_implementation = torch_dtype = device_map = None
 
         # Get model components
         # TODO: device_map="auto", currently give warning, could be ignored https://github.com/huggingface/transformers/issues/31544
         self.model = LlavaQwenForCausalLM.from_pretrained(
-            model_name, device_map=device_map, torch_dtype=torch_dtype, attn_implementation=attn_implementation
+            model_name, torch_dtype=torch_dtype, attn_implementation=attn_implementation
         )
         self.image_encoder = self.model.get_vision_tower()
         self.projector = self.model.get_model().mm_projector
