@@ -32,7 +32,7 @@ class Processor:
         self.img_size = img_size
         self.max_length = self.config.max_tokens
         self.pad_to_multiple_of = self.config.pad_to_multiple_of
-        
+
         self._tokenizer = None
 
         self.image_token = "<image>"  # TODO: config
@@ -57,9 +57,9 @@ class Processor:
         """Lazy loading of tokenizer."""
         if self._tokenizer is None:
             from transformers import AutoTokenizer
+
             self._tokenizer = AutoTokenizer.from_pretrained(self.config.model_name)
         return self._tokenizer
-        
 
     @cached_property
     def tokenized_start_prompt(self):
@@ -67,6 +67,40 @@ class Processor:
         return self.tokenizer(self.answer_start_token, add_special_tokens=False)[
             "input_ids"
         ]
+
+    @cached_property
+    def image_token_id(self):
+        return self.tokenizer.convert_tokens_to_ids(self.image_token)
+
+    def bbox_string(self, list_classes_str, list_bboxes):
+        """Returns list in this format: [{'class': 'person', 'bbox': [0.2, 0.3, 0.5, 0.8]}, {'class': 'car', 'bbox': [0.6, 0.7, 0.9, 0.95]}]"""
+        return [
+            {"class": class_str, "bbox": bbox}
+            for class_str, bbox in zip(list_classes_str, list_bboxes)
+        ]
+
+    def find_assistant_token_position(self, input_ids_np: torch.Tensor) -> int:
+        """Optimized search for assistant token in input_ids."""
+        batch_size, seq_len = input_ids_np.shape
+        token_len = len(self.tokenized_start_prompt)
+
+        # Create result array
+        positions = np.zeros(batch_size, dtype=np.int32)
+
+        # Fast path for common case
+        start_token = self.tokenized_start_prompt[0]
+        for i in range(batch_size):
+            potential_start = np.where(input_ids_np[i] == start_token)[0]
+
+            for pos in potential_start:
+                if pos + token_len <= seq_len:
+                    if np.array_equal(
+                        input_ids_np[i, pos : pos + token_len],
+                        self.tokenized_start_prompt,
+                    ):
+                        positions[i] = pos + token_len
+                        break
+        return positions
 
     def prepare_text_input(
         self,
@@ -95,9 +129,10 @@ class Processor:
 
         # Combine bboxes and classes into a list of instances
         # TODO: change bbox to special token instead of json
-        instances = []
-        for classes, bbox in zip(instance_classes_str, instance_bboxes):
-            instances.append({"class": classes, "bbox": bbox.tolist()})
+        # instances = []
+        # for classes, bbox in zip(instance_classes_str, instance_bboxes):
+        #     instances.append({"class": classes, "bbox": bbox.tolist()})
+        instances = self.bbox_string(instance_classes_str, instance_bboxes)
         # randomize order of instances
         instances = np.random.permutation(instances).tolist()
         bbox_str = json.dumps(instances)
@@ -108,7 +143,8 @@ class Processor:
             # prompt = "Given the image, identify the objects present and provide their class indices and bounding boxes in the following format: [{'class': [<class_name_1>, <class_name_2>, ...], 'bbox': [[<x_min_1>, <y_min_1>, <x_max_1>, <y_max_1>], [<x_min_2>, <y_min_2>, <x_max_2>, <y_max_2>], ...]}]"
             prompt = "Given the image, identify the objects present and provide their class indices and bounding boxes in the following format: [{'class': '<class_name_1>', 'bbox': [<x_min_1>, <y_min_1>, <x_max_1>, <y_max_1>]}, {'class': '<class_name_2>', 'bbox': [<x_min_2>, <y_min_2>, <x_max_2>, <y_max_2>]}, ...]"
             prompt = "Detect all objects in the image and output ONLY a valid JSON array of objects. Each object must have a 'class' (string name) and 'bbox' (normalized coordinates [x_min, y_min, x_max, y_max] between 0 and 1). Format: [{'class': 'person', 'bbox': [0.2, 0.3, 0.5, 0.8]}, {'class': 'car', 'bbox': [0.6, 0.7, 0.9, 0.95]}]. Include all visible objects, even if partially visible. Output nothing but the JSON array."
-            #prompt = "Output ONLY a JSON array of detected objects: [{'class': 'person', 'bbox': [x_min, y_min, x_max, y_max]}] with normalized coordinates (0-1)."
+            # prompt = "Output ONLY a JSON array of detected objects: [{'class': 'person', 'bbox': [x_min, y_min, x_max, y_max]}] with normalized coordinates (0-1)."
+        
         # system_text = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
         # system_text = "<|im_start|>system\nYou are a helpful assistant trained to detect objects in images and output their locations in a standardized JSON format.<|im_end|>\n"
         # user_text = f"<|im_start|>user\n{image_tokens}\n{prompt}<|im_end|>\n"
@@ -128,7 +164,7 @@ class Processor:
 
         # combined_text = f"<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n{image_tokens}\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
         # combined_text = f"{conv_structure_system}{conv_structure_user}{conv_structure_assistent}"
-        return combined_text
+        return combined_text, bbox_str
 
     # TODO: currently duplicte as in dataset, cause it it still used outside
     def normalize_bbox(self, bbox, image_width, image_height):
@@ -150,7 +186,7 @@ class Processor:
         )
 
     def process_batch(
-        self, batch: List[Dict[str, Union[Image.Image, List[str], List[List[float]]]]]
+        self, batch: List[Dict]
     ) -> Dict[str, Union[torch.Tensor, List[torch.Tensor]]]:
         """
         Process a batch of dictionaries to create model inputs.
@@ -168,12 +204,16 @@ class Processor:
                 - 'attention_mask': attention mask
                 - 'pixel_values': stacked image tensors
         """
-        transformed_images = []
-        transformed_bboxes = []
-        transformed_classes = []
-        transformed_classes_id = []
+        # Pre-allocate lists
+        batch_size = len(batch)
+        transformed_images = [None] * batch_size
+        transformed_bboxes = [None] * batch_size
+        transformed_classes = [None] * batch_size
+        transformed_classes_id = [None] * batch_size
+        text_inputs = [None] * batch_size
+        bbox_str = [None] * batch_size
 
-        for sample in batch:
+        for i, sample in enumerate(batch):
             # # Check if x_max > x_min and y_max > y_min
             # bboxes = sample["instance_bboxes"]
             # valid_order = (bboxes[:, 2] > bboxes[:, 0]) & (bboxes[:, 3] > bboxes[:, 1])
@@ -186,31 +226,36 @@ class Processor:
             #     invalid_bbox = bboxes[invalid_idx]
 
             # remove all invalid bboxes and their corresponding classes
-            valid_indices = [
-                i
-                for i, bbox in enumerate(sample["instance_bboxes"])
-                if bbox[2] > bbox[0] and bbox[3] > bbox[1]
-            ]
-            sample["instance_bboxes"] = [
-                sample["instance_bboxes"][i] for i in valid_indices
-            ]
-            sample["instance_classes_str"] = [
-                sample["instance_classes_str"][i] for i in valid_indices
-            ]
-            sample["instance_classes_id"] = [
-                sample["instance_classes_id"][i] for i in valid_indices
-            ]
+            boxes = np.array(sample["instance_bboxes"])
+            # Check if there are any boxes
+            if len(boxes) == 0:
+                boxes = np.zeros((0, 4))  # Empty array with correct shape
+
+            valid_mask = (boxes[:, 2] > boxes[:, 0]) & (boxes[:, 3] > boxes[:, 1])
+
+            if not np.all(valid_mask):
+                valid_indices = np.where(valid_mask)[0]
+                boxes = boxes[valid_indices]
+                classes_str = np.array(sample["instance_classes_str"])[
+                    valid_indices
+                ].tolist()
+                classes_id = np.array(sample["instance_classes_id"])[
+                    valid_indices
+                ].tolist()
+            else:
+                classes_str = sample["instance_classes_str"]
+                classes_id = sample["instance_classes_id"]
 
             transformed = self.bbox_transform(
                 image=np.array(sample["image"]),
-                bboxes=sample["instance_bboxes"],
-                class_labels=sample["instance_classes_str"],
-                class_ids=sample["instance_classes_id"],
+                bboxes=boxes,
+                class_labels=classes_str,
+                class_ids=classes_id,
             )
-            transformed_images.append(transformed["image"])
-            transformed_classes.append(transformed["class_labels"])
-            transformed_classes_id.append(
-                torch.tensor(transformed["class_ids"], dtype=torch.int64)
+            transformed_images[i] = transformed["image"]
+            transformed_classes[i] = transformed["class_labels"]
+            transformed_classes_id[i] = torch.tensor(
+                transformed["class_ids"], dtype=torch.int64
             )
 
             # Normalize values of bboxes
@@ -221,23 +266,17 @@ class Processor:
                 )
                 for bbox in transformed["bboxes"]
             ]
-            transformed_bboxes.append(torch.tensor(norm_bboxes, dtype=torch.float16))
+            transformed_bboxes[i] = torch.tensor(norm_bboxes, dtype=torch.float32)
 
-        images = torch.stack(transformed_images)
-
-        # Prepare text inputs
-        text_inputs = [
-            self.prepare_text_input(
+            text_inputs[i], bbox_str[i] = self.prepare_text_input(
                 self.num_img_tokens,
-                transformed_classes,
-                transformed_bboxes,
+                transformed["class_labels"],
+                norm_bboxes,
                 sample["captions"],
                 num_image_patches=0,
             )
-            for sample in batch
-        ]
 
-        bbox_str = [json.dumps({"class": classes, "bbox": bbox.tolist()}) for classes, bbox in zip(transformed_classes, transformed_bboxes)]
+        images = torch.stack(transformed_images)
 
         if self.train:
             self.tokenizer.padding_side = "right"
@@ -256,9 +295,7 @@ class Processor:
 
         ## Create loss_mask
         # Convert input_ids to NumPy array for faster search
-        input_ids = tokenized["input_ids"]
-        input_ids_np = input_ids.cpu().numpy()
-        tokenized_prompt_len = len(self.tokenized_start_prompt)
+        input_ids_np = tokenized["input_ids"].cpu().numpy()
 
         # with np.printoptions(threshold=np.inf):
         #     print(input_ids_np)
@@ -268,32 +305,19 @@ class Processor:
         # Initialize loss masks (same shape as input_ids)
         loss_masks = np.zeros_like(input_ids_np)
 
-        # Use NumPy's sliding window to find answer start in each sequence
-        for i in range(len(input_ids_np)):  # Process each batch item independently
-            seq = input_ids_np[i]
-
-            if len(seq) >= tokenized_prompt_len:
-                windows = np.lib.stride_tricks.sliding_window_view(
-                    seq, tokenized_prompt_len
-                )
-                match_idx = np.where(
-                    (windows == self.tokenized_start_prompt).all(axis=1)
-                )[0]
-
-                if match_idx.size > 0:
-                    answer_start = match_idx[0] + tokenized_prompt_len
-                    #print(loss_masks[i].shape)
-                    loss_masks[i, answer_start:] = 1  # Apply mask only to answer tokens
+        positions = self.find_assistant_token_position(input_ids_np)
+        for i, pos in enumerate(positions):
+            loss_masks[i, pos:] = 1
 
         # Convert loss masks back to PyTorch tensors
-        loss_masks = torch.tensor(loss_masks, dtype=torch.float32)
+        loss_masks = torch.tensor(loss_masks, dtype=torch.bool)
 
         ## Create Labels
         # Prepare lables
         labels = tokenized["input_ids"].clone()
         # TODO: make image_token_id as attribute
-        image_token_id = self.tokenizer.convert_tokens_to_ids(self.image_token)
-        labels[labels == image_token_id] = -100  # Mask image tokens
+
+        labels[labels == self.image_token_id] = -100  # Mask image tokens
         labels[loss_masks == 0] = -100  # Mask everything except the answer tokens
 
         return {

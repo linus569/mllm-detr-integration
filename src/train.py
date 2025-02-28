@@ -147,6 +147,9 @@ class Trainer:
             log.info(f"Epoch {epoch+1}/{num_epochs}, Loss: {train_loss}")
             # epoch end
 
+        progress_bar.close()
+        self.save_checkpoint(epoch, val_metrics, is_last=True)
+
         return best_map
 
     def train_step(self, step, input_ids, attention_mask, images, labels):
@@ -270,7 +273,7 @@ class Trainer:
         wandb.log({**{f"val/{k}": v for k, v in val_metrics.items()}}, step=step)
         return val_metrics
 
-    def save_checkpoint(self, epoch, metrics, is_best=False):
+    def save_checkpoint(self, epoch, metrics, is_best=False, is_last=False):
         checkpoint = {
             "epoch": epoch,
             "model_state_dict": self.model.projector.state_dict(),
@@ -287,6 +290,10 @@ class Trainer:
         if is_best:
             best_path = os.path.join(self.checkpoint_dir, "best_model.pt")
             torch.save(checkpoint, best_path)
+        
+        if is_last:
+            last_path = os.path.join(self.checkpoint_dir, f"last_model_{wandb.run.name}.pt")
+            torch.save(checkpoint, last_path)
 
         # _cleanup_old_checkpoints() # TODO: enable
 
