@@ -77,7 +77,6 @@ def build_dataloader(
     config,
     dataset_config: DatasetConfig,
     batch_size: int,
-    tokenizer: Tokenizer,
     is_train: bool,
     num_workers: int = 0,
     image_size: Tuple[int, int] = (384, 384),
@@ -99,7 +98,6 @@ def build_dataloader(
 
     processor = Processor(
         config=config,
-        tokenizer=tokenizer,
         img_size=image_size,
         num_img_tokens=num_image_tokens,
         train=is_train,

@@ -7,14 +7,12 @@ import numpy as np
 import torch
 from albumentations.pytorch import ToTensorV2
 from PIL import Image
-from transformers import PreTrainedTokenizerFast as Tokenizer
 
 
 class Processor:
     def __init__(
         self,
         config,
-        tokenizer: Tokenizer,
         img_size: Tuple[int, int],
         num_img_tokens: int,
         train: bool = True,
@@ -23,19 +21,19 @@ class Processor:
         Initialize the processor with a tokenizer.
 
         Args:
-            tokenizer: PreTrainedTokenizer
             img_size: Tuple of image dimensions (height, width)
             num_img_tokens: Number of image tokens to include
             train: Whether the processor is used in training
 
         """
         self.config = config
-        self.tokenizer = tokenizer
         self.num_img_tokens = num_img_tokens
         self.train = train
         self.img_size = img_size
         self.max_length = self.config.max_tokens
         self.pad_to_multiple_of = self.config.pad_to_multiple_of
+        
+        self._tokenizer = None
 
         self.image_token = "<image>"  # TODO: config
         self.answer_start_token = "<|im_start|>assistant\n"
@@ -53,6 +51,15 @@ class Processor:
                 format="pascal_voc", label_fields=["class_labels", "class_ids"]
             ),
         )
+
+    @property
+    def tokenizer(self):
+        """Lazy loading of tokenizer."""
+        if self._tokenizer is None:
+            from transformers import AutoTokenizer
+            self._tokenizer = AutoTokenizer.from_pretrained(self.config.model_name)
+        return self._tokenizer
+        
 
     @cached_property
     def tokenized_start_prompt(self):
@@ -99,8 +106,9 @@ class Processor:
             # prompt = "Detect all objects in this image! Only output list of json objects that are predicted. Example: [{'class': 'dog', 'bbox': [0.1, 0.2, 0.3, 0.4]}, {'class': 'cat', 'bbox': [0.5, 0.6, 0.7, 0.8]}]" #TODO: example and how string is generated is different
             # prompt = "Detect all objects in this image! Only output list of json objects that are predicted. BBox in YOLO format. Example: [{'class': ['class_1', 'class_2'], 'bbox': [[bbox_class_1], [[bbox_class_2]]}]" #TODO: example and how string is generated is different
             # prompt = "Given the image, identify the objects present and provide their class indices and bounding boxes in the following format: [{'class': [<class_name_1>, <class_name_2>, ...], 'bbox': [[<x_min_1>, <y_min_1>, <x_max_1>, <y_max_1>], [<x_min_2>, <y_min_2>, <x_max_2>, <y_max_2>], ...]}]"
-            prompt = "Given the image, identify the objects present and provide their class indices and bounding boxes in the following format: [{'class': <class_name_1>, 'bbox': [<x_min_1>, <y_min_1>, <x_max_1>, <y_max_1>]}, {'class': <class_name_2>, 'bbox': [<x_min_2>, <y_min_2>, <x_max_2>, <y_max_2>]}, ...]"
-
+            prompt = "Given the image, identify the objects present and provide their class indices and bounding boxes in the following format: [{'class': '<class_name_1>', 'bbox': [<x_min_1>, <y_min_1>, <x_max_1>, <y_max_1>]}, {'class': '<class_name_2>', 'bbox': [<x_min_2>, <y_min_2>, <x_max_2>, <y_max_2>]}, ...]"
+            prompt = "Detect all objects in the image and output ONLY a valid JSON array of objects. Each object must have a 'class' (string name) and 'bbox' (normalized coordinates [x_min, y_min, x_max, y_max] between 0 and 1). Format: [{'class': 'person', 'bbox': [0.2, 0.3, 0.5, 0.8]}, {'class': 'car', 'bbox': [0.6, 0.7, 0.9, 0.95]}]. Include all visible objects, even if partially visible. Output nothing but the JSON array."
+            #prompt = "Output ONLY a JSON array of detected objects: [{'class': 'person', 'bbox': [x_min, y_min, x_max, y_max]}] with normalized coordinates (0-1)."
         # system_text = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
         # system_text = "<|im_start|>system\nYou are a helpful assistant trained to detect objects in images and output their locations in a standardized JSON format.<|im_end|>\n"
         # user_text = f"<|im_start|>user\n{image_tokens}\n{prompt}<|im_end|>\n"

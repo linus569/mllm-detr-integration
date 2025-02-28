@@ -47,7 +47,6 @@ def dataloader(config, tokenizer):
         config=config,
         dataset_config=config.train_dataset,
         batch_size=2,
-        tokenizer=tokenizer,
         is_train=True,
         num_workers=config.num_workers,
         num_image_tokens=num_img_tokens,
