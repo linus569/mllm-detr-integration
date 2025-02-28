@@ -48,7 +48,7 @@ class ExperimentConfig:
 
     num_samples: Optional[int] = None
     val_num_samples: Optional[int] = None
-    max_tokens: int = MISSING
+    max_tokens: Optional[int] = None
     pad_to_multiple_of: Optional[int] = None
 
     batch_size: int = MISSING
@@ -79,6 +79,7 @@ class ExperimentConfig:
     save_components: List[str] = field(default_factory=list)
 
     temperature: float = MISSING
+    use_amp: bool = MISSING # use automatic mixed precision
 
 
 def build_train_dataloader(config: ExperimentConfig, model, subset_size=None):
@@ -86,7 +87,6 @@ def build_train_dataloader(config: ExperimentConfig, model, subset_size=None):
         config=config,
         dataset_config=config.train_dataset,
         batch_size=config.batch_size,
-        tokenizer=model.tokenizer,
         is_train=True,
         num_workers=config.num_workers,
         # image_size=config.transform.image_size,
@@ -103,7 +103,6 @@ def build_val_dataloader(
         config=config,
         dataset_config=config.val_dataset,
         batch_size=config.batch_size,
-        tokenizer=model.tokenizer,
         is_train=False,
         num_workers=config.num_workers,
         # image_size=config.transform.image_size,
@@ -120,7 +119,6 @@ def build_test_dataloader(
         config=config,
         dataset_config=config.train_dataset,
         batch_size=config.batch_size,
-        tokenizer=model.tokenizer,
         is_train=False,
         num_workers=config.num_workers,
         # image_size=config.transform.image_size,
@@ -281,11 +279,13 @@ class JSONStoppingCriteria(StoppingCriteria):
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
         self.end_sequence = self.tokenizer.encode(
-            "]}]<|im_end|>"
+            "<|im_end|>" # "]}]<|im_end|>"
         )  # Get token ID for closing bracket
         self.length = len(self.end_sequence)
 
     def __call__(self, input_ids, scores, **kwargs):
         # Stop if we find the end sequence
+        # print(input_ids[0][-self.length :])
+        # print(self.end_sequence)
         return input_ids[0][-self.length :] == self.end_sequence
         # return input_ids[0][-1] == self.end_sequence

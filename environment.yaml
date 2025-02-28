@@ -1,4 +1,4 @@
-name: vlm-detection
+name: vlm-detection3
 channels:
   - pytorch
   - nvidia
@@ -36,3 +36,4 @@ dependencies:
     - pytest-cov
     - nltk
     - git+https://github.com/LLaVA-VL/LLaVA-NeXT.git
+    - flash-attn --no-build-isolation

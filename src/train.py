@@ -17,6 +17,7 @@ from transformers import get_scheduler
 
 from dataset.dataset import DatasetConfig
 from model.model import VisionLanguageModel
+from utils.train_metrics import TrainMetrics
 from utils.train_utils import (
     ExperimentConfig,
     JSONStoppingCriteria,
@@ -25,7 +26,6 @@ from utils.train_utils import (
     parse_model_output_to_boxes,
     unnormalize_bbox,
 )
-from utils.train_metrics import TrainMetrics
 
 hydra.verbose = True
 log = logging.getLogger(__name__)
@@ -58,7 +58,9 @@ class Trainer:
         self.metric = TrainMetrics(device)
 
         # Mixed precision
-        self.scaler = GradScaler("cuda" if torch.cuda.is_available() else "cpu")
+        self.scaler = GradScaler(
+            "cuda" if torch.cuda.is_available() else "cpu", enabled=self.config.use_amp
+        )
 
         os.makedirs(self.checkpoint_dir, exist_ok=True)
 
@@ -148,46 +150,33 @@ class Trainer:
         return best_map
 
     def train_step(self, step, input_ids, attention_mask, images, labels):
-        if torch.cuda.is_available():
-            with autocast(
-                device_type=self.device.type
-            ):  # TODO: dtype = torch.bfloat16, more stable
-                outputs = self.model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    images=images,
-                    labels=labels,
-                )
-                loss = outputs.loss / self.gradient_accumulation_steps
-
-            self.scaler.scale(loss).backward()
-
-            if (step + 1) % self.gradient_accumulation_steps == 0:
-                # unscale gradients
-                if self.max_grad_norm is not None:  # grad_clip_norm
-                    self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(), self.max_grad_norm
-                    )
-
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-                self.scheduler.step()
-                self.optimizer.zero_grad(set_to_none=True)
-        else:
-            # TODO: grad_accumulation_steps for cpu training
+        with autocast(
+            device_type=self.device.type,
+            dtype=torch.bfloat16,  # torch.bfloat16, more stable than float16
+            enabled=self.config.use_amp,
+        ):
             outputs = self.model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 images=images,
                 labels=labels,
             )
-            loss = outputs.loss
+            loss = outputs.loss / self.gradient_accumulation_steps
 
-            loss.backward()
-            self.optimizer.step()
+        self.scaler.scale(loss).backward()
+
+        if (step + 1) % self.gradient_accumulation_steps == 0:
+            # unscale gradients
+            if self.max_grad_norm is not None:  # grad_clip_norm
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(), self.max_grad_norm
+                )
+
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
             self.scheduler.step()
-            self.optimizer.zero_grad()
+            self.optimizer.zero_grad(set_to_none=True)
 
         return outputs
 
@@ -220,23 +209,11 @@ class Trainer:
 
         for batch in progress_bar:
             # Generate predictions
-            if torch.cuda.is_available():
-                with autocast(device_type=self.device.type, enabled=False):
-                    outputs = self.model.generate(
-                        input_ids=batch["input_ids"].to(self.device),
-                        attention_mask=batch["attention_mask"].to(self.device),
-                        image=batch["images"].to(self.device),
-                        stopping_criteria=[JSONStoppingCriteria(self.model.tokenizer)],
-                        # temperature=0.0,
-                        # do_sample=False,
-                        # max_new_tokens=800,
-                        do_sample=True,
-                        temperature=0.8,
-                        top_p=0.9,
-                        top_k=50,
-                    )
-
-            else:
+            with autocast(
+                device_type=self.device.type,
+                dtype=torch.bfloat16,
+                enabled=self.config.use_amp,
+            ):
                 outputs = self.model.generate(
                     input_ids=batch["input_ids"].to(self.device),
                     attention_mask=batch["attention_mask"].to(self.device),
@@ -252,8 +229,6 @@ class Trainer:
             generated_text = self.model.tokenizer.batch_decode(
                 outputs, skip_special_tokens=True
             )
-
-            # print(generated_text)
 
             # Parse model ouput to bbox and lables
             predicted_boxes = parse_model_output_to_boxes(
@@ -278,7 +253,12 @@ class Trainer:
             # print(target_boxes)
 
             # Update metrics
-            self.metric.update(predicted_boxes, target_boxes, generated_text=generated_text, target_texts=batch["bbox_str"])
+            self.metric.update(
+                predicted_boxes,
+                target_boxes,
+                generated_text=generated_text,
+                target_texts=batch["bbox_str"],
+            )
 
         # progress_bar.clear()
         progress_bar.close()
@@ -287,12 +267,7 @@ class Trainer:
         # Compute final metrics
         val_metrics = self.metric.compute()
         print(val_metrics)
-        wandb.log(
-            {
-                **{f"val/{k}": v for k, v in val_metrics.items()},
-            },
-            step=step,
-        )
+        wandb.log({**{f"val/{k}": v for k, v in val_metrics.items()}}, step=step)
         return val_metrics
 
     def save_checkpoint(self, epoch, metrics, is_best=False):
@@ -313,7 +288,7 @@ class Trainer:
             best_path = os.path.join(self.checkpoint_dir, "best_model.pt")
             torch.save(checkpoint, best_path)
 
-        # _cleanup_old_checkpoints()
+        # _cleanup_old_checkpoints() # TODO: enable
 
     def _cleanup_old_checkpoints(self, keep_last_n=3):
         checkpoints = sorted(
@@ -347,7 +322,9 @@ class Trainer:
         trainable_params = [{"params": self.model.projector.parameters()}]
         self.optimizer = AdamW(trainable_params, lr=self.config.lr)
 
-        num_training_steps = len(self.train_dataloader) * epochs // self.gradient_accumulation_steps
+        num_training_steps = (
+            len(self.train_dataloader) * epochs // self.gradient_accumulation_steps
+        )
         self.scheduler = get_scheduler(
             "cosine",
             optimizer=self.optimizer,
@@ -374,7 +351,8 @@ def run_training(config: ExperimentConfig):
     log.info(f"Using device: {device}")
 
     model = VisionLanguageModel(model_name=config.model_name).to(device)
-    # model = torch.compile(model) # TODO: works, check if speed difference
+    if not config.debug:
+        model = torch.compile(model)  # 2.3 it/s without -> 4.5 it/s with
 
     # Initialize trainer
     trainer = Trainer(

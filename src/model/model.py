@@ -1,23 +1,35 @@
 import logging
+
 import torch
 from llava.model.language_model.llava_qwen import LlavaQwenForCausalLM
-from transformers import AutoTokenizer
 
 from model.loss import masked_cross_entropy
 
 log = logging.getLogger(__name__)
 
+
 class VisionLanguageModel(torch.nn.Module):
     def __init__(self, model_name):
         super(VisionLanguageModel, self).__init__()
+
+        self.model_name = model_name
+
+        if torch.cuda.is_available():
+            attn_implementation = "flash_attention_2"
+            torch_dtype = torch.bfloat16
+        else:
+            attn_implementation = torch_dtype = None
+
         # Get model components
-        self.model = LlavaQwenForCausalLM.from_pretrained(model_name)
+        # TODO: device_map="auto", currently give warning, could be ignored https://github.com/huggingface/transformers/issues/31544
+        self.model = LlavaQwenForCausalLM.from_pretrained(
+            model_name, torch_dtype=torch_dtype, attn_implementation=attn_implementation
+        )
         self.image_encoder = self.model.get_vision_tower()
         self.projector = self.model.get_model().mm_projector
 
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self._tokenizer = None
         self.image_token = "<image>"
-        self.model.resize_token_embeddings(len(self.tokenizer))
 
         self.image_size = self.image_encoder.config.image_size
         # Get number of tokens of image encoder
@@ -26,6 +38,15 @@ class VisionLanguageModel(torch.nn.Module):
         ]
 
         log.info("Model initialized")
+
+    @property
+    def tokenizer(self):
+        if self._tokenizer is None:
+            from transformers import AutoTokenizer
+
+            self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+            self.model.resize_token_embeddings(len(self._tokenizer))
+        return self._tokenizer
 
     def forward(self, input_ids, attention_mask, images, labels=None):
         # Image feature extraction
@@ -37,7 +58,7 @@ class VisionLanguageModel(torch.nn.Module):
             image_features = torch.stack(image_features)
         else:
             image_features = self.image_encoder(images)
-        image_features = image_features.to(dtype=torch.float32)
+        image_features = image_features.to(self.model.device, self.model.dtype)
 
         image_features = self.projector(image_features)
         # shape of image_features is (batch_size, (num_patches), num_image_tokens, token_size_text_encoder)
@@ -94,7 +115,7 @@ class VisionLanguageModel(torch.nn.Module):
             4,
             5,
         ), "Image should be of shape [batch_size, channels, height, width] or [batch_size, num_patches, channels, height, width]"
-        assert image.dtype == torch.float32, "Image should be of type float32"
+        # assert image.dtype == torch.float32, "Image should be of type float32" # FIXME: not true, can be bfloat16
 
         # Image feature extraction
         if image.dim() == 5:  # Image with patches

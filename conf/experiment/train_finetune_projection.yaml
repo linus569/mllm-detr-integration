@@ -25,3 +25,4 @@ max_tokens: 3200
 pad_to_multiple_of: 128
 
 temperature: 0.3
+use_amp: true
