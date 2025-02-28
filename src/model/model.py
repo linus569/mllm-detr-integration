@@ -33,7 +33,7 @@ class VisionLanguageModel(torch.nn.Module):
 
         # self._tokenizer = None
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        self.model.resize_token_embeddings(len(self._tokenizer))
+        self.model.resize_token_embeddings(len(self.tokenizer))
         self.image_token = "<image>"
 
         self.image_size = self.image_encoder.config.image_size
