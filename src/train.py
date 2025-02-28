@@ -9,7 +9,7 @@ import wandb
 from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig, OmegaConf
 from torch import autocast
-from torch.cuda.amp import GradScaler
+from torch.amp import GradScaler
 from torch.optim import AdamW
 from torchmetrics.detection.mean_ap import MeanAveragePrecision
 from tqdm import tqdm
@@ -58,7 +58,7 @@ class Trainer:
         self.metric = TrainMetrics(device)
 
         # Mixed precision
-        self.scaler = GradScaler()
+        self.scaler = GradScaler("cuda" if torch.cuda.is_available() else "cpu")
 
         os.makedirs(self.checkpoint_dir, exist_ok=True)
 
@@ -175,6 +175,7 @@ class Trainer:
                 self.scheduler.step()
                 self.optimizer.zero_grad(set_to_none=True)
         else:
+            # TODO: grad_accumulation_steps for cpu training
             outputs = self.model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
@@ -220,7 +221,7 @@ class Trainer:
         for batch in progress_bar:
             # Generate predictions
             if torch.cuda.is_available():
-                with autocast(device_type=self.device, enabled=False):
+                with autocast(device_type=self.device.type, enabled=False):
                     outputs = self.model.generate(
                         input_ids=batch["input_ids"].to(self.device),
                         attention_mask=batch["attention_mask"].to(self.device),

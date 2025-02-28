@@ -9,7 +9,7 @@
 #SBATCH --qos=master-queuesave
 #SBATCH --time=0-24:00:00
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=16 
+#SBATCH --cpus-per-task=16
 #SBATCH --mem=48G
 
 ##gpu:a100:1
@@ -27,7 +27,7 @@ conda deactivate
  
 # If the following does not work, try 'source activate <env-name>'
 #conda activate vlm-detection
-source activate vlm-detection
+source activate vlm-detection2
 
 # Cache data to local /tmp directory (optional)
 #rsync -r /vol/aimspace/projects/<dataset> /tmp
