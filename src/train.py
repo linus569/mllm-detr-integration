@@ -2,6 +2,9 @@ import logging
 import os
 import time
 
+os.environ["TOKENIZERS_PARALLELISM"] = "true"
+
+
 import hydra
 import numpy as np
 import torch
@@ -52,9 +55,6 @@ class Trainer:
         self.max_grad_norm = config.max_grad_norm
 
         # Initialize metric once
-        # self.metric = MeanAveragePrecision(box_format="xyxy", iou_type="bbox").to(
-        #     device
-        # )
         self.metric = TrainMetrics(device)
 
         # Mixed precision
@@ -164,7 +164,11 @@ class Trainer:
                 images=images,
                 labels=labels,
             )
-            loss = outputs.loss / self.gradient_accumulation_steps
+        loss = outputs.loss / self.gradient_accumulation_steps
+        
+        if torch.isnan(loss):
+            log.warning("NaN loss detected, skipping backward pass")
+            return outputs
 
         self.scaler.scale(loss).backward()
 
@@ -222,7 +226,7 @@ class Trainer:
                     attention_mask=batch["attention_mask"].to(self.device),
                     image=batch["images"].to(self.device),
                     stopping_criteria=[JSONStoppingCriteria(self.model.tokenizer)],
-                    do_sample=True,
+                    do_sample=True, # TODO: hardcoded to config
                     temperature=self.config.temperature,
                     top_p=0.9,
                     top_k=50,
@@ -252,9 +256,6 @@ class Trainer:
                 )
             ]
 
-            # print(predicted_boxes)
-            # print(target_boxes)
-
             # Update metrics
             self.metric.update(
                 predicted_boxes,
@@ -269,7 +270,7 @@ class Trainer:
 
         # Compute final metrics
         val_metrics = self.metric.compute()
-        print(val_metrics)
+        log.info(val_metrics)
         wandb.log({**{f"val/{k}": v for k, v in val_metrics.items()}}, step=step)
         return val_metrics
 
@@ -282,13 +283,16 @@ class Trainer:
             "metrics": metrics,
         }
 
+        # TODO: save model as artifact to wandb
+        # TODO: update best values in wandb
+
         checkpoint_path = os.path.join(
-            self.checkpoint_dir, f"checkpoint_{epoch}_{int(time.time())}.pt"
+            self.checkpoint_dir, f"checkpoint_{epoch}_{wandb.run.name}_{int(time.time())}.pt"
         )
         torch.save(checkpoint, checkpoint_path)
 
         if is_best:
-            best_path = os.path.join(self.checkpoint_dir, "best_model.pt")
+            best_path = os.path.join(self.checkpoint_dir, "best_model_{wandb.run.name}.pt")
             torch.save(checkpoint, best_path)
         
         if is_last:
@@ -338,6 +342,7 @@ class Trainer:
             num_warmup_steps=num_training_steps * self.config.warmup_ratio,
             num_training_steps=num_training_steps,
         )
+        log.info(f"Training objects initialized")
 
 
 @hydra.main(config_path="../conf", config_name="train", version_base=None)
@@ -352,14 +357,17 @@ def run_training(config: ExperimentConfig):
         config=OmegaConf.to_container(config, resolve=True, throw_on_missing=False),
         # settings=wandb.Settings(start_method='thread', init_timeout=300, _service_wait=300),
         mode="disabled" if config.debug else "online",
+        # TODO: log experiment_notes, name, tags, pre_trained, model_name
     )
+
+    # TODO: log files as artifacts
 
     device = torch.device("cuda" if torch.cuda.is_available() else config.device)
     log.info(f"Using device: {device}")
 
     model = VisionLanguageModel(model_name=config.model_name, config=config).to(device)
     if not config.debug:
-        model = torch.compile(model)  # 2.3 it/s without -> 4.5 it/s with
+        model = torch.compile(model, dynamic=True, mode='max-autotune')  # 2.3 it/s without -> 4.5 it/s with
 
     # Initialize trainer
     trainer = Trainer(

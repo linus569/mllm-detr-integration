@@ -79,7 +79,7 @@ class Processor:
             for class_str, bbox in zip(list_classes_str, list_bboxes)
         ]
 
-    def find_assistant_token_position(self, input_ids_np: torch.Tensor) -> int:
+    def find_assistant_token_position(self, input_ids_np: np.ndarray) -> int:
         """Optimized search for assistant token in input_ids."""
         batch_size, seq_len = input_ids_np.shape
         token_len = len(self.tokenized_start_prompt)
@@ -144,7 +144,7 @@ class Processor:
             prompt = "Given the image, identify the objects present and provide their class indices and bounding boxes in the following format: [{'class': '<class_name_1>', 'bbox': [<x_min_1>, <y_min_1>, <x_max_1>, <y_max_1>]}, {'class': '<class_name_2>', 'bbox': [<x_min_2>, <y_min_2>, <x_max_2>, <y_max_2>]}, ...]"
             prompt = "Detect all objects in the image and output ONLY a valid JSON array of objects. Each object must have a 'class' (string name) and 'bbox' (normalized coordinates [x_min, y_min, x_max, y_max] between 0 and 1). Format: [{'class': 'person', 'bbox': [0.2, 0.3, 0.5, 0.8]}, {'class': 'car', 'bbox': [0.6, 0.7, 0.9, 0.95]}]. Include all visible objects, even if partially visible. Output nothing but the JSON array."
             # prompt = "Output ONLY a JSON array of detected objects: [{'class': 'person', 'bbox': [x_min, y_min, x_max, y_max]}] with normalized coordinates (0-1)."
-        
+
         # system_text = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
         # system_text = "<|im_start|>system\nYou are a helpful assistant trained to detect objects in images and output their locations in a standardized JSON format.<|im_end|>\n"
         # user_text = f"<|im_start|>user\n{image_tokens}\n{prompt}<|im_end|>\n"
@@ -278,7 +278,7 @@ class Processor:
 
         images = torch.stack(transformed_images)
 
-        if self.train: # fast_att only allow left padding
+        if self.train:  # fast_att only allow left padding
             self.tokenizer.padding_side = "right"
         else:
             self.tokenizer.padding_side = "left"

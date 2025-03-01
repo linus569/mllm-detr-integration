@@ -20,7 +20,7 @@ class VisionLanguageModel(torch.nn.Module):
             attn_implementation = None # "flash_attention_2"
             #device_map = "auto"
         else:
-            attn_implementation = device_map = None
+            attn_implementation = None
 
         if config.torch_dtype == "float16":
             self.torch_dtype = torch.float16
@@ -37,9 +37,9 @@ class VisionLanguageModel(torch.nn.Module):
         self.image_encoder = self.model.get_vision_tower()
         self.projector = self.model.get_model().mm_projector
 
-        # self._tokenizer = None
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         self.model.resize_token_embeddings(len(self.tokenizer))
+
         self.image_token = "<image>"
 
         self.image_size = self.image_encoder.config.image_size
@@ -50,14 +50,6 @@ class VisionLanguageModel(torch.nn.Module):
 
         log.info("Model initialized")
 
-    # @property # create error
-    # def tokenizer(self):
-    #     if self._tokenizer is None:
-    #         from transformers import AutoTokenizer
-
-    #         self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-    #         self.model.resize_token_embeddings(len(self._tokenizer))
-    #     return self._tokenizer
 
     def forward(self, input_ids, attention_mask, images, labels=None):
         # Image feature extraction
@@ -81,7 +73,7 @@ class VisionLanguageModel(torch.nn.Module):
         # Integrate image features into token embeddings
         image_token_id = self.tokenizer.convert_tokens_to_ids(self.image_token)
 
-        n_image_tokens = (input_ids == image_token_id).sum().item()
+        n_image_tokens = (input_ids == image_token_id).sum()
         n_image_features = image_features.shape[0] * image_features.shape[1]
         if image_features.ndim == 4:  # if patches are used
             n_image_features *= image_features.shape[2]
