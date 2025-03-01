@@ -16,7 +16,6 @@ from torch.amp import GradScaler
 from torch.optim import AdamW
 from torchmetrics.detection.mean_ap import MeanAveragePrecision
 from tqdm import tqdm
-from tqdm.contrib.logging import logging_redirect_tqdm
 from transformers import get_scheduler
 
 from dataset.dataset import DatasetConfig
@@ -92,71 +91,61 @@ class Trainer:
                 else steps_per_epoch * self.config.val_ep
             ),
             desc=f"Train/Epoch 0/{num_epochs}",
-            #position=0,
-            #leave=True,
+            # position=0,
+            # leave=True,
         )
 
         # Train loop
         for epoch in range(num_epochs):
             progress_bar.set_description(f"Train/Epoch {epoch+1}/{num_epochs}")
-            with logging_redirect_tqdm():
-                for batch in self.train_dataloader:
-                    # Move batch to device
-                    input_ids = batch["input_ids"].to(self.device)
-                    attention_mask = batch["attention_mask"].to(self.device)
-                    images = batch["images"].to(self.device)
-                    labels = batch["labels"].to(self.device)
 
-                    # Forward pass
-                    outputs = self.train_step(
-                        step, input_ids, attention_mask, images, labels
+            for batch in self.train_dataloader:
+                # Move batch to device
+                input_ids = batch["input_ids"].to(self.device)
+                attention_mask = batch["attention_mask"].to(self.device)
+                images = batch["images"].to(self.device)
+                labels = batch["labels"].to(self.device)
+
+                # Forward pass
+                outputs = self.train_step(
+                    step, input_ids, attention_mask, images, labels
+                )
+
+                total_loss += outputs.loss.item()
+                running_loss = total_loss / (step + 1)
+
+                progress_bar.update(1)
+                step += 1
+
+                # Log metrics
+                if step % self.config.print_freq == 0:
+                    progress_bar.set_postfix({"loss": running_loss})
+                    wandb.log(
+                        {
+                            "train/loss": running_loss,
+                            "train/lr": self.scheduler.get_last_lr()[0],
+                        },
+                        step=step,
                     )
 
-                    total_loss += outputs.loss.item()
-                    running_loss = total_loss / (step + 1)
+                # Validate
+                if step % self.config.val_freq == 0:
+                    val_metrics = self.evaluate(step)
+                    log.info(val_metrics)
 
-                    progress_bar.update(1)
-                    step += 1
+                    is_best = val_metrics["map"] > best_map
+                    if is_best:
+                        best_map = val_metrics["map"]
 
-                    # Log metrics
-                    if step % self.config.print_freq == 0:
-                        progress_bar.set_postfix({"loss": running_loss})
-                        wandb.log(
-                            {
-                                "train/loss": running_loss,
-                                "train/lr": self.scheduler.get_last_lr()[0],
-                            },
-                            step=step,
-                        )
+                    # save model projection layer after each epoch with current timestamp and epoch
+                    self.save_checkpoint(epoch, val_metrics, is_best)
 
-                    # Validate
-                    if step % self.config.val_freq == 0:
-                        val_metrics = self.evaluate(step)
-                        log.info(val_metrics)
+                    # progress_bar.refresh()
+                    progress_bar.reset()
 
-                        is_best = val_metrics["map"] > best_map
-                        if is_best:
-                            best_map = val_metrics["map"]
-
-                        # save model projection layer after each epoch with current timestamp and epoch
-                        self.save_checkpoint(epoch, val_metrics, is_best)
-
-                        # progress_bar.refresh()
-                        #progress_bar.reset()
-                        progress_bar = tqdm(
-                            total=(
-                                self.config.val_freq
-                                if self.config.val_freq is not None
-                                else steps_per_epoch * self.config.val_ep
-                            ),
-                            desc=f"Train/Epoch {epoch+1}/{num_epochs}",
-                            #position=0,
-                            #leave=True,
-                        )
-
-                train_loss = total_loss / len(self.train_dataloader)
-                log.info(f"Epoch {epoch+1}/{num_epochs}, Loss: {train_loss}")
-                # epoch end
+            train_loss = total_loss / len(self.train_dataloader)
+            log.info(f"Epoch {epoch+1}/{num_epochs}, Loss: {train_loss}")
+            # epoch end
 
         progress_bar.close()
         self.save_checkpoint(epoch, val_metrics, is_last=True)
@@ -222,7 +211,7 @@ class Trainer:
         self.metric.reset()
 
         progress_bar = tqdm(
-            val_dataloader, desc=f"Eval/Step {step}", position=1, leave=True
+            val_dataloader, desc=f"Eval/Step {step}"
         )  # , leave=False)#, position=1, leave=True)
 
         for batch in progress_bar:
@@ -276,7 +265,7 @@ class Trainer:
             )
 
         # progress_bar.clear()
-        #progress_bar.close()
+        progress_bar.close()
         self.model.train()
 
         # Compute final metrics
@@ -378,8 +367,8 @@ def run_training(config: ExperimentConfig):
 
     model = VisionLanguageModel(model_name=config.model_name, config=config).to(device)
     if not config.debug:
-        model = torch.compile(model, dynamic=True, mode='reduce-overhead')  # 2.3 it/s without -> 4.5 it/s with
-    # mode='max-autotune' too less memroy
+        model = torch.compile(model)  # 2.3 it/s without -> 4.5 it/s with
+
     # Initialize trainer
     trainer = Trainer(
         model=model,
