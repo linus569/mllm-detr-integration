@@ -5,7 +5,7 @@ defaults:
   - /dataset@test_dataset: coco_test
 
 debug: true
-device: cpu
+device: cpu #mps
 num_workers: 0
 
 name: local_test
@@ -14,14 +14,19 @@ main_dir: .
 model_name: 'lmms-lab/llava-onevision-qwen2-0.5b-si'
 checkpoint_dir: 'checkpoints'
 
-batch_size: 2
-num_samples: 4
-val_freq: 2000 # not used
-print_freq: 50 # not used
+batch_size: 1
+total_batch_size: 2
+num_samples: 15
+val_num_samples: 2
+val_freq: 5
+print_freq: 1
 epochs: 2
-lr: 5e-5
+lr: 1e-3
 warmup_ratio: 0.1
 weight_decay: null # not used
-gradient_accumulation_steps: 2
 max_grad_norm: null
-max_tokens: 3000 #null
+max_tokens: 3200 #null
+pad_to_multiple_of: 128
+
+temperature: 0.3
+use_amp: false

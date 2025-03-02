@@ -11,6 +11,12 @@ torchmetrics
 git+https://github.com/LLaVA-VL/LLaVA-NeXT.git
 einops
 wandb
+hydra-core
+matplotlib
+tqdm
+pytest
+pytest-cov
+nltk
 
 #flash-attn
 #python 3.12
