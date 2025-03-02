@@ -2,8 +2,7 @@ import logging
 import os
 import time
 
-os.environ["TOKENIZERS_PARALLELISM"] = "true"
-
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import hydra
 import numpy as np

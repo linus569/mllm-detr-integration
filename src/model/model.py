@@ -50,6 +50,10 @@ class VisionLanguageModel(torch.nn.Module):
 
         log.info("Model initialized")
 
+    def _process_image_features(self, images):
+        # TODO: extract to function, duplicate code
+        pass
+
 
     def forward(self, input_ids, attention_mask, images, labels=None):
         # Image feature extraction
@@ -82,6 +86,9 @@ class VisionLanguageModel(torch.nn.Module):
                 f"Image features and image tokens do not match: tokens: {n_image_tokens}, features {n_image_features}"
             )
 
+        # special_image_mask shape is (batch_size, seq_len, token_size_text_encoder)
+        # inputs_embeds shape is (batch_size, seq_len, token_size_text_encoder)
+        # image_features shape is (batch_size, num_image_tokens, token_size_text_encoder)
         special_image_mask = (input_ids == image_token_id).unsqueeze(-1)
         special_image_mask = special_image_mask.expand_as(inputs_embeds).to(
             inputs_embeds.device
