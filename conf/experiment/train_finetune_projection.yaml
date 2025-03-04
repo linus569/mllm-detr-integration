@@ -27,3 +27,5 @@ pad_to_multiple_of: 128
 temperature: 0.6
 use_amp: true
 torch_dtype: null #float16 #bfloat16 error when using *16 because grad_scale works with *32
+
+num_coordinate_bins: 384 #one for every pixel

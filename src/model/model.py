@@ -1,115 +1,179 @@
 import logging
+from typing import List, Optional, Tuple, Union
 
 import torch
 from llava.model.language_model.llava_qwen import LlavaQwenForCausalLM
-from transformers import AutoTokenizer
-
+from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from model.loss import masked_cross_entropy
+from model.partial_frozen_embeddings import (
+    PartiallyFrozenEmbedding,
+    PartiallyFrozenLMHead,
+)
 
 log = logging.getLogger(__name__)
 
 
 class VisionLanguageModel(torch.nn.Module):
-    def __init__(self, model_name, config):
+    def __init__(
+        self,
+        config,
+        image_token_index: int,
+        num_new_tokens: int = 0,
+        initializers: list[list[int]] = None,
+        do_init: bool = True,
+    ):
         super(VisionLanguageModel, self).__init__()
 
-        self.model_name = model_name
+        if do_init:
+            assert (
+                initializers is not None
+            ), "Initializers should be provided for new tokens"
 
-        if torch.cuda.is_available():
-            attn_implementation = None # "flash_attention_2"
-            #device_map = "auto"
-        else:
-            attn_implementation = None
-
-        if config.torch_dtype == "float16":
-            self.torch_dtype = torch.float16
-        elif config.torch_dtype == "bfloat16":
-            self.torch_dtype = torch.bfloat16
-        else:
-            self.torch_dtype = None
+        self.config = config
 
         # Get model components
-        # TODO: device_map="auto", currently give warning, could be ignored https://github.com/huggingface/transformers/issues/31544
-        self.model = LlavaQwenForCausalLM.from_pretrained(
-            model_name, torch_dtype=self.torch_dtype, attn_implementation=attn_implementation
-        )
+        # device_map="auto", prints warning, could be ignored https://github.com/huggingface/transformers/issues/31544
+        # torch_dtype=self.torch_dtype, attn_implementation=attn_implementation,
+        self.model = LlavaQwenForCausalLM.from_pretrained(self.config.model_name)
         self.image_encoder = self.model.get_vision_tower()
         self.projector = self.model.get_model().mm_projector
 
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        self.model.resize_token_embeddings(len(self.tokenizer))
+        # freeze all parameters
+        for param in self.model.parameters():
+            param.requires_grad = False
 
-        self.image_token = "<image>"
+        # check if image_encoder params are frozen
+        for param in self.image_encoder.parameters():
+            assert not param.requires_grad, "Image encoder parameters should be frozen"
 
-        self.image_size = self.image_encoder.config.image_size
-        # Get number of tokens of image encoder
-        self.num_img_tokens = self.image_encoder.vision_tower.vision_model.embeddings.position_embedding.weight.shape[
-            0
-        ]
+        # unfreeze projector parameters for fine-tuning
+        for param in self.projector.parameters():
+            param.requires_grad = True
+
+        # Initialize new token embeddings
+        self.model.set_input_embeddings(
+            PartiallyFrozenEmbedding(
+                frozen_embedding=self.model.get_input_embeddings(),
+                new_tokens=num_new_tokens,
+                initializers=initializers,
+                do_init=do_init,
+            )
+        )
+        self.model.set_output_embeddings(
+            PartiallyFrozenLMHead(
+                frozen_lm_head=self.model.get_output_embeddings(),
+                new_tokens=num_new_tokens,
+                initializers=initializers,
+                do_init=do_init,
+            )
+        )
+
+        self.vocab_size = self.model.get_input_embeddings().num_embeddings
+        self.image_token_index = image_token_index
 
         log.info("Model initialized")
 
-    def _process_image_features(self, images):
-        # TODO: extract to function, duplicate code
-        pass
-
-
-    def forward(self, input_ids, attention_mask, images, labels=None):
+    def _get_image_features(self, pixel_values: torch.FloatTensor) -> torch.FloatTensor:
         # Image feature extraction
-        if images.ndim == 5:  # If patches are used
+        if pixel_values.ndim == 5:  # If patches are used
             image_features = []
-            for img in images:
+            for img in pixel_values:
                 image_features.append(self.image_encoder(img))
             # convert list to tensor
             image_features = torch.stack(image_features)
         else:
-            image_features = self.image_encoder(images)
+            image_features = self.image_encoder(pixel_values)
+        # TODO: check in detail again if image_features are coorect or if I need to do something with them
         image_features = image_features.to(self.model.device, self.model.dtype)
 
+        # Project image features to token size
         image_features = self.projector(image_features)
         # shape of image_features is (batch_size, (num_patches), num_image_tokens, token_size_text_encoder)
 
-        # Token embeddings
-        embedding_layer = self.model.get_input_embeddings()
-        inputs_embeds = embedding_layer(input_ids)
+        return image_features
 
-        # Integrate image features into token embeddings
-        image_token_id = self.tokenizer.convert_tokens_to_ids(self.image_token)
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        images: torch.FloatTensor = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        image_sizes: Optional[List[List[int]]] = None,
+        return_dict: Optional[bool] = None,
+        modalities: Optional[List[str]] = ["image"],
+        dpo_forward: Optional[bool] = False,
+        cache_position=None,
+    ) -> Union[Tuple, CausalLMOutputWithPast]:
+        if (input_ids is None) ^ (inputs_embeds is not None):
+            raise ValueError("You have to specify either input_ids or inputs_embeds")
+        if inputs_embeds is not None and images is not None:
+            raise ValueError("You cannot specify both inputs_embeds and images")
 
-        n_image_tokens = (input_ids == image_token_id).sum()
-        n_image_features = image_features.shape[0] * image_features.shape[1]
-        if image_features.ndim == 4:  # if patches are used
-            n_image_features *= image_features.shape[2]
-        if n_image_tokens != n_image_features:
-            raise ValueError(
-                f"Image features and image tokens do not match: tokens: {n_image_tokens}, features {n_image_features}"
+        if inputs_embeds is None:
+            # Token embeddings
+            inputs_embeds = self.model.get_input_embeddings()(input_ids)
+
+        if images is not None:
+            image_features = self._get_image_features(images)
+            # Integrate image features into token embeddings
+            n_image_tokens = (input_ids == self.image_token_index).sum()
+            n_image_features = image_features.shape[0] * image_features.shape[1]
+            if image_features.ndim == 4:  # if patches are used
+                n_image_features *= image_features.shape[2]
+            if n_image_tokens != n_image_features:
+                raise ValueError(
+                    f"Image features and image tokens do not match: tokens: {n_image_tokens}, features {n_image_features}"
+                )
+
+            # special_image_mask shape is (batch_size, seq_len, token_size_text_encoder)
+            # inputs_embeds shape is (batch_size, seq_len, token_size_text_encoder)
+            # image_features shape is (batch_size, num_image_tokens, token_size_text_encoder)
+            special_image_mask = (input_ids == self.image_token_index).unsqueeze(-1)
+            special_image_mask = special_image_mask.expand_as(inputs_embeds).to(
+                inputs_embeds.device
             )
-
-        # special_image_mask shape is (batch_size, seq_len, token_size_text_encoder)
-        # inputs_embeds shape is (batch_size, seq_len, token_size_text_encoder)
-        # image_features shape is (batch_size, num_image_tokens, token_size_text_encoder)
-        special_image_mask = (input_ids == image_token_id).unsqueeze(-1)
-        special_image_mask = special_image_mask.expand_as(inputs_embeds).to(
-            inputs_embeds.device
-        )
-        image_features = image_features.to(inputs_embeds.device, inputs_embeds.dtype)
-        inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)
+            image_features = image_features.to(
+                inputs_embeds.device, inputs_embeds.dtype
+            )
+            inputs_embeds = inputs_embeds.masked_scatter(
+                special_image_mask, image_features
+            )
 
         # LLM forward pass
         outputs = self.model(
-            inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
         )
 
-        if labels is None:
-            return outputs
+        loss = None
+        if labels is not None:
+            loss = masked_cross_entropy(
+                outputs.logits,
+                labels,
+                vocab_size=self.vocab_size,  # TODO: Check if change needd when increasing vocab size
+            )
 
-        loss = masked_cross_entropy(
-            outputs.logits, labels, vocab_size=self.model.vocab_size
+        return CausalLMOutputWithPast(
+            loss=loss,
+            logits=outputs.logits,
+            past_key_values=outputs.past_key_values,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+            # TODO: return also image_hidden states?
         )
-        outputs.loss = loss
-        return outputs
 
     @torch.no_grad()
     def generate(
@@ -149,8 +213,7 @@ class VisionLanguageModel(torch.nn.Module):
         inputs_embeds = embedding_layer(input_ids)
 
         # Integrate image features into embeddings
-        image_token_id = self.tokenizer.convert_tokens_to_ids(self.image_token)
-        special_image_mask = (input_ids == image_token_id).unsqueeze(-1)
+        special_image_mask = (input_ids == self.image_token_index).unsqueeze(-1)
         special_image_mask = special_image_mask.expand_as(inputs_embeds)
         image_features = image_features.to(inputs_embeds.device, inputs_embeds.dtype)
         inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)
@@ -179,7 +242,11 @@ class VisionLanguageModel(torch.nn.Module):
 
 if __name__ == "__main__":
     model_name = "lmms-lab/llava-onevision-qwen2-0.5b-si"
-    model = VisionLanguageModel(model_name)
+    from ..utils.config import ExperimentConfig
+
+    config = ExperimentConfig()
+
+    model = VisionLanguageModel(config=config)
     # get one image and input into forward pass
     image = torch.rand(1, 3, 384, 384)
     input_ids = torch.tensor([[1, 2, 3, 4, 5]])

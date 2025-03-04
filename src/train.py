@@ -2,6 +2,9 @@ import logging
 import os
 import time
 
+from dataset.processor import Processor
+from utils.config import ExperimentConfig
+
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import hydra
@@ -13,20 +16,16 @@ from omegaconf import DictConfig, OmegaConf
 from torch import autocast
 from torch.amp import GradScaler
 from torch.optim import AdamW
-from torchmetrics.detection.mean_ap import MeanAveragePrecision
 from tqdm import tqdm
 from transformers import get_scheduler
 
-from dataset.dataset import DatasetConfig
 from model.model import VisionLanguageModel
+from utils.config import DatasetConfig
 from utils.train_metrics import TrainMetrics
 from utils.train_utils import (
-    ExperimentConfig,
     JSONStoppingCriteria,
     build_train_dataloader,
     build_val_dataloader,
-    parse_model_output_to_boxes,
-    unnormalize_bbox,
 )
 
 hydra.verbose = True
@@ -36,13 +35,15 @@ log = logging.getLogger(__name__)
 class Trainer:
     def __init__(
         self,
-        model,
-        config,
-        device,
+        model: VisionLanguageModel,
+        processor: Processor,
+        config: ExperimentConfig,
+        device: torch.device,
     ):
         self.model = model
         self.config = config
         self.device = device
+        self.processor = processor
 
         self.train_dataloader = None
         self.val_dataloader = None
@@ -91,7 +92,7 @@ class Trainer:
             ),
             desc=f"Train/Epoch 0/{num_epochs}",
             # position=0,
-            # leave=True,
+            leave=False,
         )
 
         # Train loop
@@ -154,7 +155,7 @@ class Trainer:
     def train_step(self, step, input_ids, attention_mask, images, labels):
         with autocast(
             device_type=self.device.type,
-            dtype=self.model.torch_dtype,  # torch.bfloat16, more stable than float16
+            # dtype=self.model.torch_dtype,  # torch.bfloat16, more stable than float16
             enabled=self.config.use_amp,
         ):
             outputs = self.model(
@@ -164,7 +165,7 @@ class Trainer:
                 labels=labels,
             )
         loss = outputs.loss / self.gradient_accumulation_steps
-        
+
         if torch.isnan(loss):
             log.warning("NaN loss detected, skipping backward pass")
             return outputs
@@ -210,50 +211,35 @@ class Trainer:
         self.metric.reset()
 
         progress_bar = tqdm(
-            val_dataloader, desc=f"Eval/Step {step}"
+            val_dataloader, desc=f"Eval/Step {step}", leave=False, position=1
         )  # , leave=False)#, position=1, leave=True)
 
         for batch in progress_bar:
             # Generate predictions
             with autocast(
                 device_type=self.device.type,
-                dtype=self.model.torch_dtype,
+                # dtype=self.model.torch_dtype,
                 enabled=self.config.use_amp,
             ):
                 outputs = self.model.generate(
                     input_ids=batch["input_ids"].to(self.device),
                     attention_mask=batch["attention_mask"].to(self.device),
                     image=batch["images"].to(self.device),
-                    stopping_criteria=[JSONStoppingCriteria(self.model.tokenizer)],
-                    do_sample=True, # TODO: hardcoded to config
+                    stopping_criteria=[JSONStoppingCriteria(self.processor.tokenizer)],
+                    do_sample=True,  # TODO: hardcoded to config
                     temperature=self.config.temperature,
                     top_p=0.9,
                     top_k=50,
                 )
 
-            # Decode predictions
-            generated_text = self.model.tokenizer.batch_decode(
-                outputs, skip_special_tokens=True
-            )
-
             # Parse model ouput to bbox and lables
-            predicted_boxes = parse_model_output_to_boxes(
-                generated_text, val_dataloader.dataset, self.device
+            generated_text, predicted_boxes = self.processor.postprocess_json_batch(
+                outputs, val_dataloader.dataset, self.device
             )
 
-            target_boxes = [
-                {
-                    "boxes": unnormalize_bbox(
-                        boxes.to(self.device),
-                        self.model.image_size,
-                        self.model.image_size,
-                    ),
-                    "labels": labels.to(self.device),
-                }
-                for boxes, labels in zip(
-                    batch["instance_bboxes"], batch["instance_classes_id"]
-                )
-            ]
+            target_boxes = self.processor.postprocess_target_batch(
+                batch=batch, device=self.device
+            )
 
             # Update metrics
             self.metric.update(
@@ -286,16 +272,21 @@ class Trainer:
         # TODO: update best values in wandb
 
         checkpoint_path = os.path.join(
-            self.checkpoint_dir, f"checkpoint_{epoch}_{wandb.run.name}_{int(time.time())}.pt"
+            self.checkpoint_dir,
+            f"checkpoint_{epoch}_{wandb.run.name}_{int(time.time())}.pt",
         )
         torch.save(checkpoint, checkpoint_path)
 
         if is_best:
-            best_path = os.path.join(self.checkpoint_dir, "best_model_{wandb.run.name}.pt")
+            best_path = os.path.join(
+                self.checkpoint_dir, "best_model_{wandb.run.name}.pt"
+            )
             torch.save(checkpoint, best_path)
-        
+
         if is_last:
-            last_path = os.path.join(self.checkpoint_dir, f"last_model_{wandb.run.name}.pt")
+            last_path = os.path.join(
+                self.checkpoint_dir, f"last_model_{wandb.run.name}.pt"
+            )
             torch.save(checkpoint, last_path)
 
         # _cleanup_old_checkpoints() # TODO: enable
@@ -311,35 +302,36 @@ class Trainer:
         # Create dataloader
         self.train_dataloader = build_train_dataloader(
             config=self.config,
-            model=self.model,
+            processor=self.processor,
             subset_size=self.config.num_samples,
         )
         self.val_dataloader = build_val_dataloader(
             config=self.config,
-            model=self.model,
+            processor=self.processor,
             subset_size=self.config.val_num_samples,
         )
         epochs = self.config.epochs
 
-        # Freeze all layers except projection layer and new token embeddings
-        for param in self.model.parameters():
-            param.requires_grad = False
+        # Create optimizer
+        params = [p for p in self.model.parameters() if p.requires_grad]
+        log.info(f"Number of trainable parameters: {sum(p.numel() for p in params)}")
+        # TODO: add weight_decay to conf
+        self.optimizer = AdamW(params, lr=self.config.lr)
 
-        # Unfreeze projection layer
-        for param in self.model.projector.parameters():
-            param.requires_grad = True
-
-        trainable_params = [{"params": self.model.projector.parameters()}]
-        self.optimizer = AdamW(trainable_params, lr=self.config.lr)
-
-        num_training_steps = (
-            len(self.train_dataloader) * epochs // self.gradient_accumulation_steps
-        )
+        # Create lr scheduler
+        num_training_steps = len(self.train_dataloader) * epochs
+        if self.gradient_accumulation_steps > 1:
+            num_training_steps = num_training_steps // self.gradient_accumulation_steps
+        warmup_steps = num_training_steps * self.config.warmup_ratio
         self.scheduler = get_scheduler(
             "cosine",
             optimizer=self.optimizer,
-            num_warmup_steps=num_training_steps * self.config.warmup_ratio,
+            num_warmup_steps=warmup_steps,
             num_training_steps=num_training_steps,
+        )
+
+        log.info(
+            f"LR scheduler with {num_training_steps} training steps and warmup {warmup_steps}"
         )
         log.info(f"Training objects initialized")
 
@@ -364,13 +356,22 @@ def run_training(config: ExperimentConfig):
     device = torch.device("cuda" if torch.cuda.is_available() else config.device)
     log.info(f"Using device: {device}")
 
-    model = VisionLanguageModel(model_name=config.model_name, config=config).to(device)
+    processor = Processor.from_config(config, add_special_tokens=True)
+    model = VisionLanguageModel(
+        config=config,
+        image_token_index=processor.image_token_index,
+        num_new_tokens=len(processor.special_tokens),
+        initializers=processor.special_tokens_initializer,
+        do_init=True,
+    ).to(device)
+
     if not config.debug:
         model = torch.compile(model)  # 2.3 it/s without -> 4.5 it/s with
 
     # Initialize trainer
     trainer = Trainer(
         model=model,
+        processor=processor,
         config=config,
         device=device,
     )

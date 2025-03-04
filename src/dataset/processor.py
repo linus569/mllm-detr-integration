@@ -1,47 +1,58 @@
 import json
+import logging
+import re
 from functools import cached_property
 from typing import Dict, List, Tuple, Union
 
 import albumentations as A
 import numpy as np
 import torch
+from torch.utils.data import Subset
 from albumentations.pytorch import ToTensorV2
 from PIL import Image
+from tokenizers import AddedToken
+from transformers import AutoTokenizer
+from transformers.processing_utils import ProcessorMixin
+from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+
+from dataset.dataset import COCODataset
+from utils.config import ExperimentConfig
+from utils.token_utils import generate_coordinate_tokens, get_token_initializers
+
+logger = logging.getLogger(__name__)
 
 
-class Processor:
+class Processor(ProcessorMixin):
     def __init__(
         self,
-        config,
-        img_size: Tuple[int, int],
-        num_img_tokens: int,
-        train: bool = True,
+        config: ExperimentConfig,
+        tokenizer: PreTrainedTokenizerBase = None,
     ):
         """
         Initialize the processor with a tokenizer.
 
         Args:
-            img_size: Tuple of image dimensions (height, width)
+            image_size: Tuple of image dimensions (height, width)
             num_img_tokens: Number of image tokens to include
             train: Whether the processor is used in training
 
         """
         self.config = config
-        self.num_img_tokens = num_img_tokens
-        self.train = train
-        self.img_size = img_size
+
+        self.image_size = self.config.image_size
+        self.image_token = self.config.image_token
+        self.num_image_tokens = self.config.num_image_tokens
         self.max_length = self.config.max_tokens
         self.pad_to_multiple_of = self.config.pad_to_multiple_of
 
-        self._tokenizer = None
+        self.tokenizer = tokenizer
 
-        self.image_token = "<image>"  # TODO: config
-        self.answer_start_token = "<|im_start|>assistant\n"
+        self.answer_start_token = "<|im_start|>assistant\n"  # TODO: config
 
         # TODO: define transformes in config
         self.bbox_transform = A.Compose(
             [
-                A.Resize(self.img_size[0], self.img_size[1]),
+                A.Resize(self.image_size[0], self.image_size[1]),
                 A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
                 # A.HorizontalFlip(p=0.5),
                 # A.RandomBrightnessContrast(p=0.2),
@@ -52,14 +63,47 @@ class Processor:
             ),
         )
 
-    @property
-    def tokenizer(self):
-        """Lazy loading of tokenizer."""
-        if self._tokenizer is None:
-            from transformers import AutoTokenizer
+    @staticmethod
+    def from_config(config: ExperimentConfig, add_special_tokens: bool = True):
+        """Create a new processor from a configuration."""
+        tokenizer = AutoTokenizer.from_pretrained(config.model_name)
 
-            self._tokenizer = AutoTokenizer.from_pretrained(self.config.model_name)
-        return self._tokenizer
+        processor = Processor(config=config, tokenizer=tokenizer)
+        if add_special_tokens:
+            processor.add_special_tokens()
+
+        return processor
+
+    @property
+    def image_token_index(self) -> int:
+        """Index of the image token in the tokenizer."""
+        return self.tokenizer.convert_tokens_to_ids(self.image_token)
+
+    def add_special_tokens(self):
+        """Add special tokens to the tokenizer."""
+        special_tokens = [AddedToken(content=tok) for tok in self.special_tokens]
+        num_added_tokens = self.tokenizer.add_tokens(special_tokens)
+        assert num_added_tokens == len(
+            special_tokens
+        ), f"Some tokens were not added: {num_added_tokens}/{len(special_tokens)} tokens added"
+
+    @cached_property
+    def special_tokens(self) -> List[str]:
+        """Special tokens for the processor."""
+        special_tokens = []
+        num_bins = self.config.num_coordinate_bins
+        shared_coords = True  # TODO: config
+        coordinate_tokens = generate_coordinate_tokens(num_bins, shared_coords)
+        special_tokens.extend(coordinate_tokens)
+        return special_tokens
+
+    @property
+    def special_tokens_initializer(self) -> List[List[int]]:
+        """Initializers for special tokens."""
+        # TODO: definit initialization scheme for special tokens
+        initializers = get_token_initializers(self.tokenizer, self.special_tokens)  #
+        # empty list for random initialization
+        return [initializers.get(token, []) for token in self.special_tokens]
 
     @cached_property
     def tokenized_start_prompt(self):
@@ -68,15 +112,41 @@ class Processor:
             "input_ids"
         ]
 
-    @cached_property
-    def image_token_id(self):
-        return self.tokenizer.convert_tokens_to_ids(self.image_token)
+    ################
+    # Preprocessing
+    ################
+
+    def format_bbox_with_tokens(self, bbox_list: List[List[float]]) -> List[List[str]]:
+        """
+        Convert normalized bounding boxes to strings with special coordinate tokens.
+
+        Args:
+            bbox_list: List of [x0, y0, x1, y1] normalized coordinates (0-1)
+
+        Returns:
+            List of lists containing coordinate tokens for each bbox
+        """
+        # TODO: could optimize to go to closest bin, but the higher the
+        # number of bins, the less important this is
+
+        num_bins = self.config.num_coordinate_bins
+        if num_bins <= 0:
+            return bbox_list
+
+        # Vectorize the binning operation
+        bbox_array = np.array(bbox_list)
+        bbox_bins = np.minimum((bbox_array * num_bins).astype(int), num_bins - 1)
+        # percentages = (bins * 100 // (num_bins - 1)) if num_bins > 1 else np.zeros_like(bins)
+
+        # Vectorize token generation
+        return [[f"<coord_{bin}>" for bin in bbox] for bbox in bbox_bins]
 
     def bbox_string(self, list_classes_str, list_bboxes):
         """Returns list in this format: [{'class': 'person', 'bbox': [0.2, 0.3, 0.5, 0.8]}, {'class': 'car', 'bbox': [0.6, 0.7, 0.9, 0.95]}]"""
+        formatted_bboxes = self.format_bbox_with_tokens(list_bboxes)
         return [
             {"class": class_str, "bbox": bbox}
-            for class_str, bbox in zip(list_classes_str, list_bboxes)
+            for class_str, bbox in zip(list_classes_str, formatted_bboxes)
         ]
 
     def find_assistant_token_position(self, input_ids_np: np.ndarray) -> int:
@@ -110,6 +180,7 @@ class Processor:
         captions: Union[str, List[str]],
         num_image_patches: int = 0,
         prompt: str = None,
+        train: bool = True,
     ) -> str:
         """
         Prepare the input text string by combining image tokens and metadata.
@@ -121,6 +192,7 @@ class Processor:
             captions: Image caption(s)
             num_image_patches: Number of image patches in the batch
             prompt: Prompt for the model
+            train: Whether the processor is used for training data
         """
         # Add image tokens based on number of patches
         image_tokens = (
@@ -138,12 +210,12 @@ class Processor:
         bbox_str = json.dumps(instances)
 
         if prompt is None:
-            # prompt = "Detect all objects in this image! Only output list of json objects that are predicted. Example: [{'class': 'dog', 'bbox': [0.1, 0.2, 0.3, 0.4]}, {'class': 'cat', 'bbox': [0.5, 0.6, 0.7, 0.8]}]" #TODO: example and how string is generated is different
             # prompt = "Detect all objects in this image! Only output list of json objects that are predicted. BBox in YOLO format. Example: [{'class': ['class_1', 'class_2'], 'bbox': [[bbox_class_1], [[bbox_class_2]]}]" #TODO: example and how string is generated is different
             # prompt = "Given the image, identify the objects present and provide their class indices and bounding boxes in the following format: [{'class': [<class_name_1>, <class_name_2>, ...], 'bbox': [[<x_min_1>, <y_min_1>, <x_max_1>, <y_max_1>], [<x_min_2>, <y_min_2>, <x_max_2>, <y_max_2>], ...]}]"
-            prompt = "Given the image, identify the objects present and provide their class indices and bounding boxes in the following format: [{'class': '<class_name_1>', 'bbox': [<x_min_1>, <y_min_1>, <x_max_1>, <y_max_1>]}, {'class': '<class_name_2>', 'bbox': [<x_min_2>, <y_min_2>, <x_max_2>, <y_max_2>]}, ...]"
-            prompt = "Detect all objects in the image and output ONLY a valid JSON array of objects. Each object must have a 'class' (string name) and 'bbox' (normalized coordinates [x_min, y_min, x_max, y_max] between 0 and 1). Format: [{'class': 'person', 'bbox': [0.2, 0.3, 0.5, 0.8]}, {'class': 'car', 'bbox': [0.6, 0.7, 0.9, 0.95]}]. Include all visible objects, even if partially visible. Output nothing but the JSON array."
+            # prompt = "Given the image, identify the objects present and provide their class indices and bounding boxes in the following format: [{'class': '<class_name_1>', 'bbox': [<x_min_1>, <y_min_1>, <x_max_1>, <y_max_1>]}, {'class': '<class_name_2>', 'bbox': [<x_min_2>, <y_min_2>, <x_max_2>, <y_max_2>]}, ...]"
+            # prompt = "Detect all objects in the image and output ONLY a valid JSON array of objects. Each object must have a 'class' (string name) and 'bbox' (normalized coordinates [x_min, y_min, x_max, y_max] between 0 and 1). Format: [{'class': 'person', 'bbox': [0.2, 0.3, 0.5, 0.8]}, {'class': 'car', 'bbox': [0.6, 0.7, 0.9, 0.95]}]. Include all visible objects, even if partially visible. Output nothing but the JSON array."
             # prompt = "Output ONLY a JSON array of detected objects: [{'class': 'person', 'bbox': [x_min, y_min, x_max, y_max]}] with normalized coordinates (0-1)."
+            prompt = "Detect all objects in the image and output ONLY a valid JSON array of objects. Each object must have a 'class' (string name) and 'bbox' (list of 4 special coordinate tokens [x_min, y_min, x_max, y_max]). Format: [{'class': 'person', 'bbox': ['<coord_2>', '<coord_3>', '<coord_5>', '<coord_8>']}, {'class': 'car', 'bbox': ['<coord_6>', '<coord_7>', '<coord_9>', '<coord_9>']}]. Each <coord_X> token represents a quantized position. Include all visible objects, even if partially visible. Output nothing but the JSON array."
 
         # system_text = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
         # system_text = "<|im_start|>system\nYou are a helpful assistant trained to detect objects in images and output their locations in a standardized JSON format.<|im_end|>\n"
@@ -159,7 +231,7 @@ class Processor:
             "<|im_start|>assistant\n"
         )
 
-        if self.train:
+        if train:
             combined_text += f"{bbox_str}<|im_end|>"
 
         # combined_text = f"<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n{image_tokens}\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
@@ -185,8 +257,8 @@ class Processor:
             y2 * image_height,
         )
 
-    def process_batch(
-        self, batch: List[Dict]
+    def preprocess_img_text_batch(
+        self, batch: List[Dict], train: bool = True
     ) -> Dict[str, Union[torch.Tensor, List[torch.Tensor]]]:
         """
         Process a batch of dictionaries to create model inputs.
@@ -197,6 +269,7 @@ class Processor:
                 - 'instance_classes': List[str]
                 - 'instance_bboxes': List[List[float]]
                 - 'captions': str or List[str]
+            train: Whether the processor is used for training data
 
         Returns:
             Dictionary with:
@@ -214,34 +287,20 @@ class Processor:
         bbox_str = [None] * batch_size
 
         for i, sample in enumerate(batch):
-            # # Check if x_max > x_min and y_max > y_min
-            # bboxes = sample["instance_bboxes"]
-            # valid_order = (bboxes[:, 2] > bboxes[:, 0]) & (bboxes[:, 3] > bboxes[:, 1])
-
-            # # remove all invalid bboxes using valid order
-            # s
-
-            # if not np.all(valid_order):
-            #     invalid_idx = np.where(~valid_order)[0][0]
-            #     invalid_bbox = bboxes[invalid_idx]
-
-            # remove all invalid bboxes and their corresponding classes
+            # Check if there are any boxes and if they are valid, if not remove them
             boxes = np.array(sample["instance_bboxes"])
-            # Check if there are any boxes
             if len(boxes) == 0:
-                boxes = np.zeros((0, 4))  # Empty array with correct shape
+                boxes = np.zeros((0, 4))
 
             valid_mask = (boxes[:, 2] > boxes[:, 0]) & (boxes[:, 3] > boxes[:, 1])
 
             if not np.all(valid_mask):
                 valid_indices = np.where(valid_mask)[0]
                 boxes = boxes[valid_indices]
-                classes_str = np.array(sample["instance_classes_str"])[
-                    valid_indices
-                ].tolist()
-                classes_id = np.array(sample["instance_classes_id"])[
-                    valid_indices
-                ].tolist()
+                classes_str = np.array(sample["instance_classes_str"])[valid_indices]
+                classes_str = classes_str.tolist()
+                classes_id = np.array(sample["instance_classes_id"])[valid_indices]
+                classes_id = classes_id.tolist()
             else:
                 classes_str = sample["instance_classes_str"]
                 classes_id = sample["instance_classes_id"]
@@ -269,16 +328,17 @@ class Processor:
             transformed_bboxes[i] = torch.tensor(norm_bboxes, dtype=torch.float32)
 
             text_inputs[i], bbox_str[i] = self.prepare_text_input(
-                self.num_img_tokens,
+                self.num_image_tokens,
                 transformed["class_labels"],
                 norm_bboxes,
                 sample["captions"],
                 num_image_patches=0,
+                train=train,
             )
 
         images = torch.stack(transformed_images)
 
-        if self.train:  # fast_att only allow left padding
+        if train:  # fast_att only allow left padding
             self.tokenizer.padding_side = "right"
         else:
             self.tokenizer.padding_side = "left"
@@ -317,7 +377,7 @@ class Processor:
         labels = tokenized["input_ids"].clone()
         # TODO: make image_token_id as attribute
 
-        labels[labels == self.image_token_id] = -100  # Mask image tokens
+        labels[labels == self.image_token_index] = -100  # Mask image tokens
         labels[loss_masks == 0] = -100  # Mask everything except the answer tokens
 
         return {
@@ -330,14 +390,179 @@ class Processor:
             "bbox_str": bbox_str,
         }
 
-    def collate_fn(self, batch: List[Dict]) -> Dict[str, torch.Tensor]:
-        """
-        Collate function to be used with PyTorch DataLoader.
+    ################
+    # Postprocessing
+    ################
 
+    def _unnormalize_bbox(self, bbox: torch.Tensor, size: Tuple[int, int]) -> torch.Tensor:
+        """
+        Unnormalize bounding boxes from [0,1] to pixel coordinates efficiently.
         Args:
-            samples: List of batch dictionaries
-
+            bbox: Tensor of shape (N, 4) or (4,) with normalized coordinates
+            width: Original image width
+            height: Original image height
         Returns:
-            Processed batch dictionary
+            Tensor of same shape with pixel coordinates
         """
-        return self.process_batch(batch)
+        if bbox.numel() == 0:
+            return torch.zeros((0, 4), device=bbox.device, dtype=bbox.dtype)
+
+        if bbox.dim() == 1:
+            bbox = bbox.unsqueeze(0)
+
+        width, height = size
+
+        # Create scaling factor tensor
+        scale = torch.tensor(
+            [width, height, width, height], device=bbox.device, dtype=bbox.dtype
+        )
+
+        # Vectorized multiplication
+        bbox_unnorm = bbox * scale
+
+        return bbox_unnorm if bbox.dim() == 2 else bbox_unnorm.squeeze(0)
+
+    def postprocess_target_batch(self, batch: Dict[str, torch.Tensor], device: str):
+        assert batch is not None, "No batch provided"
+        assert "instance_bboxes" in batch, "No instance bboxes provided"
+        assert "instance_classes_id" in batch, "No instance classes provided"
+
+        return [
+            {
+                "boxes": self._unnormalize_bbox(boxes.to(device), size=self.config.image_size),
+                "labels": labels.to(device),
+            } for boxes, labels in zip(batch["instance_bboxes"], batch["instance_classes_id"])
+        ]
+
+    def postprocess_json_batch(
+        self, sequences: torch.LongTensor, dataset: Union[COCODataset, Subset], device: str
+    ):
+        # TODO: move postprocessing here
+        assert sequences is not None, "No output sequences provided"
+
+        if hasattr(dataset, "dataset"):
+            dataset = dataset.dataset
+        category_dict = dataset.cat_name_to_id
+
+        generated_texts = self.tokenizer.batch_decode(
+            sequences, skip_special_tokens=True
+        )
+
+        return generated_texts, [
+            self._postprocess_json(
+                text=text, cat_name_to_id=category_dict, device=device
+            )
+            for text in generated_texts
+        ]
+
+    def _postprocess_json(self, text: str, cat_name_to_id: Dict[str, int], device: str):
+        assert text is not None, "No text provided"
+
+        predictions = self._parse_model_output(text)
+
+        if not predictions or len(predictions) == 0:
+            return {
+                "boxes": torch.zeros((0, 4), device=device),
+                "labels": torch.zeros((0,), dtype=torch.int64, device=device),
+                "scores": torch.zeros((0,), dtype=torch.float32, device=device),
+            }
+
+        num_predictions = len(predictions)
+        text_bbox = torch.zeros(
+            (num_predictions, 4), dtype=torch.float32, device=device
+        )
+        text_labels = torch.zeros(num_predictions, dtype=torch.int64, device=device)
+        text_scores = torch.ones(num_predictions, dtype=torch.float32, device=device)
+
+        for i, obj in enumerate(predictions):
+            class_name = obj.get("class", "")
+            bbox = obj.get("bbox", [])
+
+            # Convert bbox to tensor
+            if len(bbox) == 4:
+                text_bbox[i] = torch.tensor(bbox, dtype=torch.float32, device=device)
+                text_labels[i] = cat_name_to_id.get(class_name, -1)
+
+        text_bbox = self._unnormalize_bbox(text_bbox, size=self.config.image_size)
+
+        return {
+            "boxes": text_bbox,
+            "labels": text_labels,
+            "scores": text_scores,
+        }
+
+    def _parse_model_output(self, text: str) -> List[Dict]:
+        try:
+            # Parse JSON text
+            # replace single quotes with double quotes, remove leading/training text, fix missing quotes
+
+            start_idx = text.find("[")
+            end_idx = text.rfind("]") + 1
+            if start_idx == -1 or end_idx == 0:
+                return []
+
+            json_text = text[start_idx:end_idx]
+            json_text = json_text.replace("'", '"')
+            # quotes around keys
+            json_text = re.sub(r"([{,]\s*)(\w+)(:)", r'\1"\2"\3', json_text)
+            
+            # quotes around unquoted coorindate tokens
+            pattern = r'(?<![\'"])(<coord_\d+>)(?![\'"])'
+            json_text = re.sub(pattern, r'"\1"', json_text)
+
+            objects = json.loads(json_text)
+
+            # Precompile token pattern for faster processing
+            token_pattern = re.compile(r"<coord_(\d+)>")
+
+            valid_objects = []
+
+            # Validate output format, throw error when invalid
+            for obj in objects:
+                if not isinstance(obj, dict):
+                    continue
+                if "class" not in obj or "bbox" not in obj:
+                    continue
+                if not isinstance(obj["bbox"], list) or not isinstance(
+                    obj["class"], str
+                ):
+                    continue
+                if len(obj["bbox"]) != 4:
+                    continue
+
+                bbox = obj["bbox"]
+                is_valid = True
+
+                for i, coord in enumerate(bbox):
+                    if isinstance(coord, str) and coord.startswith("<coord_"):
+                        match = token_pattern.match(coord)
+                        if match:
+                            bin_idx = int(match.group(1))
+                            num_bins = self.config.num_coordinate_bins
+                            # Convert to normalized coordinate
+                            bbox[i] = bin_idx / (num_bins - 1) if num_bins > 1 else 0.0
+                        else:
+                            is_valid = False
+                            break
+                    elif not isinstance(coord, (int, float)):
+                        is_valid = False
+                        break
+
+                if not is_valid:
+                    continue
+
+                # Ensure bbox values are all floats
+                if not all(isinstance(bbox_val, (int, float)) for bbox_val in bbox):
+                    continue
+
+                # Ensure bbox values are within [0, 1]
+                for i in range(4):
+                    bbox[i] = min(max(bbox[i], 0.0), 1.0)
+
+                valid_objects.append(obj)
+
+            return valid_objects
+
+        except json.JSONDecodeError as e:
+            logger.debug(f"Failed to parse model output text '{text}' with error {e}")
+            return []
