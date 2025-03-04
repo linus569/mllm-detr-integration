@@ -74,6 +74,62 @@ class VisionLanguageModel(torch.nn.Module):
 
         log.info("Model initialized")
 
+    def state_dict(self, prefix="", keep_vars=False):
+        log.info("Reading state dict")
+        projector_state_dict = self.projector.state_dict(
+            prefix=prefix + "projector.", keep_vars=keep_vars
+        )
+        input_embeddings_state_dict = self.model.get_input_embeddings().state_dict(
+            prefix=prefix + "input_embeddings.", keep_vars=keep_vars
+        )
+        output_embeddings_state_dict = self.model.get_output_embeddings().state_dict(
+            prefix=prefix + "output_embeddings.", keep_vars=keep_vars
+        )
+
+        return {
+            **projector_state_dict,
+            **input_embeddings_state_dict,
+            **output_embeddings_state_dict,
+        }
+
+    def load_state_dict(self, state_dict, strict=True):
+        log.info("Loading state dict")
+        is_torch_compile = next(iter(state_dict.keys())).startswith("_orig_mod.")
+        if is_torch_compile:
+            assert all(
+                [k.startswith("_orig_mod.") for k in state_dict.keys()]
+            ), "State dict should be from torch compile"
+            state_dict = {k[len("_orig_mod.") :]: v for k, v in state_dict.items()}
+        projector_state_dict = {
+            k[len("projector.") :]: v
+            for k, v in state_dict.items()
+            if k.startswith("projector.")
+        }
+        input_embeddings_state_dict = {
+            k[len("input_embeddings.") :]: v
+            for k, v in state_dict.items()
+            if k.startswith("input_embeddings.")
+        }
+        output_embeddings_state_dict = {
+            k[len("output_embeddings.") :]: v
+            for k, v in state_dict.items()
+            if k.startswith("output_embeddings.")
+        }
+
+        missing1, unexpected1 = self.projector.load_state_dict(
+            projector_state_dict, strict=strict
+        )
+        missing2, unexpected2 = self.model.get_input_embeddings().load_state_dict(
+            input_embeddings_state_dict, strict=strict
+        )
+        missing3, unexpected3 = self.model.get_output_embeddings().load_state_dict(
+            output_embeddings_state_dict, strict=strict
+        )
+        missing = missing1 + missing2 + missing3
+        unexpected = unexpected1 + unexpected2 + unexpected3
+
+        return missing, unexpected
+
     def _get_image_features(self, pixel_values: torch.FloatTensor) -> torch.FloatTensor:
         # Image feature extraction
         if pixel_values.ndim == 5:  # If patches are used

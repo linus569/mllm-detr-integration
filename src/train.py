@@ -200,7 +200,7 @@ class Trainer:
         if full_eval:
             val_dataloader = build_val_dataloader(
                 config=self.config,
-                model=self.model,
+                processor=self.processor,
                 subset_size=None,
             )
         else:
@@ -236,7 +236,6 @@ class Trainer:
             generated_text, predicted_boxes = self.processor.postprocess_json_batch(
                 outputs, val_dataloader.dataset, self.device
             )
-
             target_boxes = self.processor.postprocess_target_batch(
                 batch=batch, device=self.device
             )
@@ -255,14 +254,13 @@ class Trainer:
 
         # Compute final metrics
         val_metrics = self.metric.compute()
-        log.info(val_metrics)
         wandb.log({**{f"val/{k}": v for k, v in val_metrics.items()}}, step=step)
         return val_metrics
 
     def save_checkpoint(self, epoch, metrics, is_best=False, is_last=False):
         checkpoint = {
             "epoch": epoch,
-            "model_state_dict": self.model.projector.state_dict(),
+            "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "scheduler_state_dict": self.scheduler.state_dict(),
             "metrics": metrics,
