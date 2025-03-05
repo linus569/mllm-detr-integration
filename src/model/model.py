@@ -74,16 +74,16 @@ class VisionLanguageModel(torch.nn.Module):
 
         log.info("Model initialized")
 
-    def state_dict(self, prefix="", keep_vars=False):
+    def state_dict(self, destination=None, prefix="", keep_vars=False):
         log.info("Reading state dict")
         projector_state_dict = self.projector.state_dict(
-            prefix=prefix + "projector.", keep_vars=keep_vars
+            destination=destination, prefix=prefix + "projector.", keep_vars=keep_vars
         )
         input_embeddings_state_dict = self.model.get_input_embeddings().state_dict(
-            prefix=prefix + "input_embeddings.", keep_vars=keep_vars
+            destination=destination, prefix=prefix + "input_embeddings.", keep_vars=keep_vars
         )
         output_embeddings_state_dict = self.model.get_output_embeddings().state_dict(
-            prefix=prefix + "output_embeddings.", keep_vars=keep_vars
+            destination=destination, prefix=prefix + "output_embeddings.", keep_vars=keep_vars
         )
 
         return {

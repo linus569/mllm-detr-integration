@@ -27,8 +27,10 @@ class PartiallyFrozenEmbedding(nn.Module):
         for param in self.frozen_embedding.parameters():
             param.requires_grad = False
 
-    def state_dict(self, prefix="", keep_vars=False):
-        return self.trainable_embedding.state_dict(prefix=prefix, keep_vars=keep_vars)
+    def state_dict(self, destination=None, prefix="", keep_vars=False):
+        return self.trainable_embedding.state_dict(
+            destination=destination, prefix=prefix, keep_vars=keep_vars
+        )
 
     def load_state_dict(self, state_dict, strict=True):
         return self.trainable_embedding.load_state_dict(state_dict, strict)
@@ -48,19 +50,21 @@ class PartiallyFrozenEmbedding(nn.Module):
         N, L = input_ids.shape
         frozen_mask = input_ids < self.num_frozen
 
-        frozen_input_ids = input_ids[frozen_mask]
-        frozen_embed = self.frozen_embedding(frozen_input_ids)
-        trainable_input_ids = input_ids[~frozen_mask] - self.num_frozen
-        trainable_embed = self.trainable_embedding(trainable_input_ids)
-        embeddings = frozen_embed.new_zeros(N, L, self.embedding_dim)
-        embeddings[frozen_mask, :] = frozen_embed
-        embeddings[~frozen_mask, :] = trainable_embed
-
-        # frozen_input_ids = input_ids.clamp(max=self.num_frozen - 1)
-        # trainable_input_ids = input_ids.clamp(min=self.num_frozen) - self.num_frozen
+        # frozen_input_ids = input_ids[frozen_mask]
         # frozen_embed = self.frozen_embedding(frozen_input_ids)
+        # trainable_input_ids = input_ids[~frozen_mask] - self.num_frozen
         # trainable_embed = self.trainable_embedding(trainable_input_ids)
-        # embeddings = torch.where(frozen_mask.unsqueeze(-1), frozen_embed, trainable_embed)
+        # embeddings = frozen_embed.new_zeros(N, L, self.embedding_dim)
+        # embeddings[frozen_mask, :] = frozen_embed
+        # embeddings[~frozen_mask, :] = trainable_embed
+
+        frozen_input_ids = input_ids.clamp(max=self.num_frozen - 1)
+        trainable_input_ids = input_ids.clamp(min=self.num_frozen) - self.num_frozen
+        frozen_embed = self.frozen_embedding(frozen_input_ids)
+        trainable_embed = self.trainable_embedding(trainable_input_ids)
+        embeddings = torch.where(frozen_mask.unsqueeze(-1), frozen_embed, trainable_embed)
+
+        #assert torch.allclose(embeddings, embeddings2)
 
         return embeddings
 
@@ -90,8 +94,10 @@ class PartiallyFrozenLMHead(nn.Module):
         for param in self.frozen_lm_head.parameters():
             param.requires_grad = False
 
-    def state_dict(self, prefix="", keep_vars=False):
-        return self.trainable_lm_head.state_dict(prefix=prefix, keep_vars=keep_vars)
+    def state_dict(self, destination=None, prefix="", keep_vars=False):
+        return self.trainable_lm_head.state_dict(
+            destination=destination, prefix=prefix, keep_vars=keep_vars
+        )
 
     def load_state_dict(self, state_dict, strict=True):
         return self.trainable_lm_head.load_state_dict(state_dict, strict)
