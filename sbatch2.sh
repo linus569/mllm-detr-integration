@@ -29,7 +29,7 @@ conda deactivate
 source activate vlm-detection2
 
 # Run the program with remaining arguments
-python /u/home/salzmann/Documents/dev/master-thesis/src/train.py $@
+python /u/home/salzmann/Documents/dev/master-thesis/src/train.py +experiment=train_finetune_projection $@
 EOL
 
 # Submit the job
