@@ -277,7 +277,7 @@ class Trainer:
 
         if is_best:
             best_path = os.path.join(
-                self.checkpoint_dir, "best_model_{wandb.run.name}.pt"
+                self.checkpoint_dir, f"best_model_{wandb.run.name}.pt"
             )
             torch.save(checkpoint, best_path)
 

@@ -80,10 +80,14 @@ class VisionLanguageModel(torch.nn.Module):
             destination=destination, prefix=prefix + "projector.", keep_vars=keep_vars
         )
         input_embeddings_state_dict = self.model.get_input_embeddings().state_dict(
-            destination=destination, prefix=prefix + "input_embeddings.", keep_vars=keep_vars
+            destination=destination,
+            prefix=prefix + "input_embeddings.",
+            keep_vars=keep_vars,
         )
         output_embeddings_state_dict = self.model.get_output_embeddings().state_dict(
-            destination=destination, prefix=prefix + "output_embeddings.", keep_vars=keep_vars
+            destination=destination,
+            prefix=prefix + "output_embeddings.",
+            keep_vars=keep_vars,
         )
 
         return {
@@ -217,9 +221,7 @@ class VisionLanguageModel(torch.nn.Module):
         loss = None
         if labels is not None:
             loss = masked_cross_entropy(
-                outputs.logits,
-                labels,
-                vocab_size=self.vocab_size,  # TODO: Check if change needd when increasing vocab size
+                outputs.logits, labels, vocab_size=self.vocab_size
             )
 
         return CausalLMOutputWithPast(

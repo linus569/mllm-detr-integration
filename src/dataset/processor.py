@@ -7,10 +7,10 @@ from typing import Dict, List, Tuple, Union
 import albumentations as A
 import numpy as np
 import torch
-from torch.utils.data import Subset
 from albumentations.pytorch import ToTensorV2
 from PIL import Image
 from tokenizers import AddedToken
+from torch.utils.data import Subset
 from transformers import AutoTokenizer
 from transformers.processing_utils import ProcessorMixin
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
@@ -48,6 +48,7 @@ class Processor(ProcessorMixin):
         self.tokenizer = tokenizer
 
         self.answer_start_token = "<|im_start|>assistant\n"  # TODO: config
+        self.use_special_coord_tokens = False
 
         # TODO: define transformes in config
         self.bbox_transform = A.Compose(
@@ -71,6 +72,7 @@ class Processor(ProcessorMixin):
         processor = Processor(config=config, tokenizer=tokenizer)
         if add_special_tokens:
             processor.add_special_tokens()
+            processor.use_special_coord_tokens = True
 
         return processor
 
@@ -101,7 +103,10 @@ class Processor(ProcessorMixin):
     def special_tokens_initializer(self) -> List[List[int]]:
         """Initializers for special tokens."""
         # TODO: definit initialization scheme for special tokens
-        initializers = get_token_initializers(self.tokenizer, self.special_tokens)  #
+        num_bins = self.config.num_coordinate_bins
+        initializers = get_token_initializers(
+            self.tokenizer, self.special_tokens, num_bins
+        )
         # empty list for random initialization
         return [initializers.get(token, []) for token in self.special_tokens]
 
@@ -112,41 +117,38 @@ class Processor(ProcessorMixin):
             "input_ids"
         ]
 
+    def bin_to_coord(self, bin_idx: int) -> float:
+        """Convert bin indix to normalized coordinate."""
+        num_bins = self.config.num_coordinate_bins
+        return bin_idx / (num_bins - 1) if num_bins > 1 else 0.0
+
+    def coord_to_bin(self, coord: List[List[float]]) -> List[List[int]]:
+        """Convert normalized coordinate bbox batch to bin indices."""
+        # TODO: could optimize to go to closest bin, but the higher the
+        # number of bins, the less important this is
+        num_bins = self.config.num_coordinate_bins
+        assert num_bins > 0, "Number of coordinate bins must be greater than 0"
+
+        coord_array = np.array(coord)
+        coord_bins = np.minimum(
+            (coord_array * (num_bins - 1)).astype(int), num_bins - 1
+        )
+        return coord_bins
+
     ################
     # Preprocessing
     ################
 
-    def format_bbox_with_tokens(self, bbox_list: List[List[float]]) -> List[List[str]]:
-        """
-        Convert normalized bounding boxes to strings with special coordinate tokens.
-
-        Args:
-            bbox_list: List of [x0, y0, x1, y1] normalized coordinates (0-1)
-
-        Returns:
-            List of lists containing coordinate tokens for each bbox
-        """
-        # TODO: could optimize to go to closest bin, but the higher the
-        # number of bins, the less important this is
-
-        num_bins = self.config.num_coordinate_bins
-        if num_bins <= 0:
-            return bbox_list
-
-        # Vectorize the binning operation
-        bbox_array = np.array(bbox_list)
-        bbox_bins = np.minimum((bbox_array * num_bins).astype(int), num_bins - 1)
-        # percentages = (bins * 100 // (num_bins - 1)) if num_bins > 1 else np.zeros_like(bins)
-
-        # Vectorize token generation
-        return [[f"<coord_{bin}>" for bin in bbox] for bbox in bbox_bins]
-
-    def bbox_string(self, list_classes_str, list_bboxes):
+    def format_bbox_to_string(self, list_classes_str, list_bboxes):
         """Returns list in this format: [{'class': 'person', 'bbox': [0.2, 0.3, 0.5, 0.8]}, {'class': 'car', 'bbox': [0.6, 0.7, 0.9, 0.95]}]"""
-        formatted_bboxes = self.format_bbox_with_tokens(list_bboxes)
+        if self.use_special_coord_tokens:
+            list_bboxes = [
+                [f"<coord_{bin}>" for bin in bbox]
+                for bbox in self.coord_to_bin(list_bboxes)
+            ]
         return [
             {"class": class_str, "bbox": bbox}
-            for class_str, bbox in zip(list_classes_str, formatted_bboxes)
+            for class_str, bbox in zip(list_classes_str, list_bboxes)
         ]
 
     def find_assistant_token_position(self, input_ids_np: np.ndarray) -> int:
@@ -204,7 +206,7 @@ class Processor(ProcessorMixin):
         # instances = []
         # for classes, bbox in zip(instance_classes_str, instance_bboxes):
         #     instances.append({"class": classes, "bbox": bbox.tolist()})
-        instances = self.bbox_string(instance_classes_str, instance_bboxes)
+        instances = self.format_bbox_to_string(instance_classes_str, instance_bboxes)
         # randomize order of instances
         instances = np.random.permutation(instances).tolist()
         bbox_str = json.dumps(instances)
@@ -394,7 +396,9 @@ class Processor(ProcessorMixin):
     # Postprocessing
     ################
 
-    def _unnormalize_bbox(self, bbox: torch.Tensor, size: Tuple[int, int]) -> torch.Tensor:
+    def _unnormalize_bbox(
+        self, bbox: torch.Tensor, size: Tuple[int, int]
+    ) -> torch.Tensor:
         """
         Unnormalize bounding boxes from [0,1] to pixel coordinates efficiently.
         Args:
@@ -429,13 +433,21 @@ class Processor(ProcessorMixin):
 
         return [
             {
-                "boxes": self._unnormalize_bbox(boxes.to(device), size=self.config.image_size),
+                "boxes": self._unnormalize_bbox(
+                    boxes.to(device), size=self.config.image_size
+                ),
                 "labels": labels.to(device),
-            } for boxes, labels in zip(batch["instance_bboxes"], batch["instance_classes_id"])
+            }
+            for boxes, labels in zip(
+                batch["instance_bboxes"], batch["instance_classes_id"]
+            )
         ]
 
     def postprocess_json_batch(
-        self, sequences: torch.LongTensor, dataset: Union[COCODataset, Subset], device: str
+        self,
+        sequences: torch.LongTensor,
+        dataset: Union[COCODataset, Subset],
+        device: str,
     ):
         # TODO: move postprocessing here
         assert sequences is not None, "No output sequences provided"
@@ -505,7 +517,7 @@ class Processor(ProcessorMixin):
             json_text = json_text.replace("'", '"')
             # quotes around keys
             json_text = re.sub(r"([{,]\s*)(\w+)(:)", r'\1"\2"\3', json_text)
-            
+
             # quotes around unquoted coorindate tokens
             pattern = r'(?<![\'"])(<coord_\d+>)(?![\'"])'
             json_text = re.sub(pattern, r'"\1"', json_text)
@@ -537,10 +549,7 @@ class Processor(ProcessorMixin):
                     if isinstance(coord, str) and coord.startswith("<coord_"):
                         match = token_pattern.match(coord)
                         if match:
-                            bin_idx = int(match.group(1))
-                            num_bins = self.config.num_coordinate_bins
-                            # Convert to normalized coordinate
-                            bbox[i] = bin_idx / (num_bins - 1) if num_bins > 1 else 0.0
+                            bbox[i] = self.bin_to_coord(int(match.group(1)))
                         else:
                             is_valid = False
                             break
