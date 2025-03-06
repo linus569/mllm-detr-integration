@@ -1,21 +1,22 @@
 import os
 import sys
+
 import pytest
-import torch
 from hydra import compose, initialize
 from hydra.core.config_store import ConfigStore
 from omegaconf import OmegaConf
-from transformers import AutoTokenizer
 
 # Add the src directory to the Python path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from dataset.dataset import DatasetConfig, build_dataloader
-from utils.train_utils import ExperimentConfig
+from dataset.processor import Processor
+from utils.config import DatasetConfig, ExperimentConfig
+from utils.train_utils import build_dataloader
 
 OmegaConf.register_new_resolver(
     "ifel", lambda flag, val_true, val_false: val_true if flag else val_false
 )
+
 
 @pytest.fixture
 def config():
@@ -33,35 +34,32 @@ def config():
 
 
 @pytest.fixture
-def tokenizer():
+def processor(config):
     """Fixture to create and return the tokenizer."""
-    model_name = "lmms-lab/llava-onevision-qwen2-0.5b-si"
-    return AutoTokenizer.from_pretrained(model_name)
+    return Processor.from_config(config, add_special_tokens=True)
 
 
 @pytest.fixture
-def dataloader(config, tokenizer):
+def dataloader(config, processor):
     """Fixture to create and return the dataloader."""
-    num_img_tokens = 729
     return build_dataloader(
-        config=config,
+        processor=processor,
         dataset_config=config.train_dataset,
         batch_size=2,
         is_train=True,
         num_workers=config.num_workers,
-        num_image_tokens=num_img_tokens,
         subset_size=10,
     )
 
 
-def test_padding_position(dataloader, tokenizer):
+def test_padding_position(dataloader, processor):
     """
     Test that padding tokens are correctly positioned on the right side
     of the input sequences.
     """
     batch = next(iter(dataloader))
     input_ids = batch["input_ids"]
-    padding_token_id = tokenizer.pad_token_id
+    padding_token_id = processor.tokenizer.pad_token_id
 
     for ids in input_ids:
         ids_list = ids.tolist()
