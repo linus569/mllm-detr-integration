@@ -8,6 +8,7 @@ import albumentations as A
 import numpy as np
 import torch
 from albumentations.pytorch import ToTensorV2
+from lxml import etree
 from PIL import Image
 from tokenizers import AddedToken
 from torch.utils.data import Subset
@@ -139,17 +140,15 @@ class Processor(ProcessorMixin):
     # Preprocessing
     ################
 
-    def format_bbox_to_string(self, list_classes_str, list_bboxes):
-        """Returns list in this format: [{'class': 'person', 'bbox': [0.2, 0.3, 0.5, 0.8]}, {'class': 'car', 'bbox': [0.6, 0.7, 0.9, 0.95]}]"""
-        if self.use_special_coord_tokens:
-            list_bboxes = [
-                [f"<coord_{bin}>" for bin in bbox]
-                for bbox in self.coord_to_bin(list_bboxes)
-            ]
-        return [
-            {"class": class_str, "bbox": bbox}
-            for class_str, bbox in zip(list_classes_str, list_bboxes)
-        ]
+    def format_bbox_to_xml(self, list_classes_str, list_bboxes):
+        """Returns list in xml format:"""
+        xml_str = "<annotation>"
+        for classes_str, bbox in zip(list_classes_str, list_bboxes):
+            x0, y0, x1, y1 = bbox
+            bbox_xml = f"<bbox x0='{x0:.5}' y0='{y0:.5}' x1='{x1:.5}' y1='{y1:.5}'/>"
+            xml_str += f"<object><class>{classes_str}</class>{bbox_xml}</object>"
+        # print(xml_str)
+        return xml_str + "</annotation>"
 
     def find_assistant_token_position(self, input_ids_np: np.ndarray) -> int:
         """Optimized search for assistant token in input_ids."""
@@ -206,10 +205,10 @@ class Processor(ProcessorMixin):
         # instances = []
         # for classes, bbox in zip(instance_classes_str, instance_bboxes):
         #     instances.append({"class": classes, "bbox": bbox.tolist()})
-        instances = self.format_bbox_to_string(instance_classes_str, instance_bboxes)
+        bbox_str = self.format_bbox_to_xml(instance_classes_str, instance_bboxes)
         # randomize order of instances
-        instances = np.random.permutation(instances).tolist()
-        bbox_str = json.dumps(instances)
+        # instances = np.random.permutation(instances).tolist()
+        # bbox_str = json.dumps(instances)
 
         if prompt is None:
             # prompt = "Detect all objects in this image! Only output list of json objects that are predicted. BBox in YOLO format. Example: [{'class': ['class_1', 'class_2'], 'bbox': [[bbox_class_1], [[bbox_class_2]]}]" #TODO: example and how string is generated is different
@@ -217,7 +216,11 @@ class Processor(ProcessorMixin):
             # prompt = "Given the image, identify the objects present and provide their class indices and bounding boxes in the following format: [{'class': '<class_name_1>', 'bbox': [<x_min_1>, <y_min_1>, <x_max_1>, <y_max_1>]}, {'class': '<class_name_2>', 'bbox': [<x_min_2>, <y_min_2>, <x_max_2>, <y_max_2>]}, ...]"
             # prompt = "Detect all objects in the image and output ONLY a valid JSON array of objects. Each object must have a 'class' (string name) and 'bbox' (normalized coordinates [x_min, y_min, x_max, y_max] between 0 and 1). Format: [{'class': 'person', 'bbox': [0.2, 0.3, 0.5, 0.8]}, {'class': 'car', 'bbox': [0.6, 0.7, 0.9, 0.95]}]. Include all visible objects, even if partially visible. Output nothing but the JSON array."
             # prompt = "Output ONLY a JSON array of detected objects: [{'class': 'person', 'bbox': [x_min, y_min, x_max, y_max]}] with normalized coordinates (0-1)."
-            prompt = "Detect all objects in the image and output ONLY a valid JSON array of objects. Each object must have a 'class' (string name) and 'bbox' (list of 4 special coordinate tokens [x_min, y_min, x_max, y_max]). Format: [{'class': 'person', 'bbox': ['<coord_2>', '<coord_3>', '<coord_5>', '<coord_8>']}, {'class': 'car', 'bbox': ['<coord_6>', '<coord_7>', '<coord_9>', '<coord_9>']}]. Each <coord_X> token represents a quantized position. Include all visible objects, even if partially visible. Output nothing but the JSON array."
+            # prompt = "Detect all objects in the image and output ONLY a valid JSON array of objects. Each object must have a 'class' (string name) and 'bbox' (list of 4 special coordinate tokens [x_min, y_min, x_max, y_max]). Format: [{'class': 'person', 'bbox': ['<coord_2>', '<coord_3>', '<coord_5>', '<coord_8>']}, {'class': 'car', 'bbox': ['<coord_6>', '<coord_7>', '<coord_9>', '<coord_9>']}]. Each <coord_X> token represents a quantized position. Include all visible objects, even if partially visible. Output nothing but the JSON array."
+            # prompt = "Detect all objects in the image and output ONLY a valid JSON array of objects. Each object must have a 'class' (string name) and 'bbox' (list of 4 special coordinate tokens). Format: [{'class': 'person', 'bbox': ['<coord_2>', '<coord_3>', '<coord_5>', '<coord_8>']}, {'class': 'car', 'bbox': ['<coord_6>', '<coord_7>', '<coord_9>', '<coord_9>']}]. Each <coord_X> token represents a quantized position. Include all visible objects, even if partially visible. Output nothing but the JSON array."
+            
+            example_xml = "<annotation><object><class>car</class><bbox x0='0.14673' y0='0.36377' x1='0.18527' y1='0.44438'/></object><object><class>surfboard</class><bbox x0='0.0' y0='0.41329' x1='0.86317' y1='0.67906'/></object></annotation>"
+            prompt = f"Detect all objects in the image and output ONLY a valid XML of list of object. Each <object> must have a <class> (string name) and <bbox> (list of 4 normalized coordinates [x_min, y_min, x_max, y_max]). Format: {example_xml}. Include all visible objects, even if partially visible. Output nothing but the XML."
 
         # system_text = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
         # system_text = "<|im_start|>system\nYou are a helpful assistant trained to detect objects in images and output their locations in a standardized JSON format.<|im_end|>\n"
@@ -377,7 +380,7 @@ class Processor(ProcessorMixin):
         ## Create Labels
         # Prepare lables
         labels = tokenized["input_ids"].clone()
-        # TODO: make image_token_id as attribute    
+        # TODO: make image_token_id as attribute
         labels[labels == self.tokenizer.pad_token_id] = -100  # Mask padding tokens
         labels[labels == self.image_token_index] = -100  # Mask image tokens
         labels[loss_masks == 0] = -100  # Mask everything except the answer tokens
@@ -387,6 +390,7 @@ class Processor(ProcessorMixin):
             "attention_mask": tokenized["attention_mask"],
             "images": images,
             "labels": labels,
+            # for evaluation purposes
             "instance_bboxes": transformed_bboxes,
             "instance_classes_id": transformed_classes_id,
             "bbox_str": bbox_str,
@@ -442,6 +446,102 @@ class Processor(ProcessorMixin):
                 batch["instance_bboxes"], batch["instance_classes_id"]
             )
         ]
+
+    def postprocess_xml_batch(
+        self,
+        sequence: torch.LongTensor,
+        dataset: Union[COCODataset, Subset],
+        device: str,
+    ):
+        assert sequence is not None, "No batch provided"
+
+        generated_text = self.tokenizer.batch_decode(sequence, skip_special_tokens=True)
+
+        if hasattr(dataset, "dataset"):
+            dataset = dataset.dataset
+        category_dict = dataset.cat_name_to_id
+
+        results = []
+
+        for i, text in enumerate(generated_text):
+            try:
+                results.append(
+                    self._postprocess_xml(
+                        text=text, cat_name_to_id=category_dict, device=device
+                    )
+                )
+            except Exception as e:
+                logger.warning(f"Error processing item {i} in batch: {e}")
+                results.append(
+                    {
+                        "boxes": torch.zeros((0, 4), device=device),
+                        "labels": torch.zeros((0,), dtype=torch.int64, device=device),
+                        "scores": torch.zeros((0,), dtype=torch.float32, device=device),
+                    }
+                )
+
+        return generated_text, results
+
+    def _postprocess_xml(self, text: str, cat_name_to_id: Dict[str, int], device: str):
+        assert text is not None, "No text provided"
+
+        # def safe_parse(xml_str):
+        #     parser = etree.XMLParser(recover=True)
+        #     root = etree.fromstring(xml_str, parser=parser)
+        #     print(root[1][1].attrib)
+        #     return etree.tostring(root, pretty_print=True)
+        #
+        
+        start_idx = text.find("<annotation>")
+        end_idx = text.rfind("</annotation>") + len("</annotation>")
+        if start_idx == -1 or end_idx == 0:
+            raise ValueError("Invalid XML format")
+        
+        xml_text = text[start_idx:end_idx]
+        parser = etree.XMLParser(recover=True)
+        root = etree.fromstring(xml_text, parser=parser)
+
+        objects = root.findall("object")
+        if not objects:
+            raise ValueError("No objects found in XML")
+
+        num_objects = len(objects)
+
+        text_bbox = torch.zeros((num_objects, 4), dtype=torch.float32, device=device)
+        text_labels = torch.zeros(num_objects, dtype=torch.int64, device=device)
+        text_scores = torch.ones(num_objects, dtype=torch.float32, device=device)
+
+        valid_count = 0
+
+        for i, obj in enumerate(objects):
+            class_name = obj.find("class").text
+            bbox = obj.find("bbox")
+
+            # Convert bbox to tensor, values in attrib
+            if bbox is not None:
+                x0 = float(bbox.get("x0", -1))
+                y0 = float(bbox.get("y0", -1))
+                x1 = float(bbox.get("x1", -1))
+                y1 = float(bbox.get("y1", -1))
+                if all(v >= 0 for v in [x0, y0, x1, y1]):
+                    text_bbox[i] = torch.tensor(
+                        [x0, y0, x1, y1], dtype=torch.float32, device=device
+                    )
+                    text_labels[i] = cat_name_to_id.get(class_name, -1)
+                    valid_count += 1
+                
+        if valid_count < num_objects:
+            text_bbox = text_bbox[:valid_count]
+            text_labels = text_labels[:valid_count]
+            text_scores = text_scores[:valid_count]
+
+        text_bbox = self._unnormalize_bbox(text_bbox, size=self.config.image_size)
+
+        return {
+            "boxes": text_bbox,
+            "labels": text_labels,
+            "scores": text_scores,
+        }
 
     def postprocess_json_batch(
         self,

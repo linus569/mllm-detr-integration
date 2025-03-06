@@ -233,7 +233,7 @@ class Trainer:
                 )
 
             # Parse model ouput to bbox and lables
-            generated_text, predicted_boxes = self.processor.postprocess_json_batch(
+            generated_text, predicted_boxes = self.processor.postprocess_xml_batch(
                 outputs, val_dataloader.dataset, self.device
             )
             target_boxes = self.processor.postprocess_target_batch(

@@ -2,39 +2,11 @@ from typing import Dict, List
 
 
 def generate_coordinate_tokens(num_bins: int, shared_coords: bool = True) -> List[str]:
-    """
-    Generate quantized coordinate tokens for bounding box representation.
-    Can generate either shared tokens across all coordinates or separate tokens for x0,y0,x1,y1.
-    shared_coords=True: num_bins
-    shared_coords=False: num_bins * 4
+    new_tokens = []
 
-    Args:
-        num_bins: Number of quantization bins per dimension
-        shared_coords: If True, creates shared tokens for all coordinates (num_bins total)
-                     If False, creates separate tokens for x0,y0,x1,y1 (num_bins * 4 total)
-
-    Returns:
-        List of special tokens for coordinates
-    """
-    coordinate_tokens = []
-
-    if shared_coords:
-        # Generate shared tokens for all coordinates
-        for i in range(num_bins):
-            # pct = i * 100 // (num_bins - 1) if num_bins > 1 else 0
-            #token = f"<coord_{pct}>"
-            token = f"<coord_{i}>"
-            coordinate_tokens.append(token)
-    else:
-        # Generate separate tokens for each coordinate
-        for coord in ["x0", "y0", "x1", "y1"]:
-            for i in range(num_bins):
-                #pct = i * 100 // (num_bins - 1) if num_bins > 1 else 0
-                #token = f"<{coord}_{pct}>"
-                token = f"<{coord}_{i}>"
-                coordinate_tokens.append(token)
-
-    return coordinate_tokens
+    new_tokens = ["<object>", "</object>", "<bbox>", "</bbox>", "<class>", "</class>", "<annotation>", "</annotation>"]
+    
+    return new_tokens
 
 def spatial_position_initialization(tokenizer, coordinate_tokens, num_bins):
     """Initialize tokens using spatial position concepts already in vocabulary."""
@@ -44,36 +16,28 @@ def spatial_position_initialization(tokenizer, coordinate_tokens, num_bins):
     def get_token_ids(text):
         return tokenizer.encode(text, add_special_tokens=False)
     
-    # Position descriptions based on relative position in bin range
-    position_descriptors = {
-        0.0: ["minimum", "start", "beginning"],
-        0.25: ["low", "near start", "first quarter"],
-        0.5: ["middle", "center", "halfway"],
-        0.75: ["high", "near end", "third quarter"],
-        1.0: ["maximum", "end", "final"] 
-    }
+
     
     for token in coordinate_tokens:
-        if token.startswith("<coord_"):
-            # Extract bin number
-            bin_idx = int(token.replace("<coord_", "").replace(">", ""))
-            
-            # Calculate normalized position (0 to 1)
-            position = bin_idx / (num_bins - 1) if num_bins > 1 else 0
-            
-            # Find closest position descriptor
-            closest_key = min(position_descriptors.keys(), key=lambda k: abs(k - position))
-            desc_options = position_descriptors[closest_key]
-            
-            # Choose a descriptor based on bin index for variety
-            desc = desc_options[bin_idx % len(desc_options)]
-
-            # Create token initialization using position term
-            #initializers[token] = get_token_ids(f"position {desc}, {position:.4f}")
-            initializers[token] = get_token_ids(f"{position:.8f}")
+        if token == "<annotation>":
+            initializers[token] = get_token_ids("<annotation")
+        elif token == "</annotation>":
+            initializers[token] = get_token_ids("</annotation")
+        elif token == "<object>":
+            initializers[token] = get_token_ids("<object")
+        elif token == "</object>":
+            initializers[token] = get_token_ids("</object")
+        elif token == "<bbox>":
+            initializers[token] = get_token_ids("<bbox")
+        elif token == "</bbox>":
+            initializers[token] = get_token_ids("</bbox>")
+        elif token == "<class>":
+            initializers[token] = get_token_ids("<class")
+        elif token == "</class>":
+            initializers[token] = get_token_ids("</class")
         else:
-            # For coordinate-specific tokens if any
             initializers[token] = []
+
     
     return initializers
 
