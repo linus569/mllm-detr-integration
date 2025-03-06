@@ -69,7 +69,8 @@ def spatial_position_initialization(tokenizer, coordinate_tokens, num_bins):
             desc = desc_options[bin_idx % len(desc_options)]
 
             # Create token initialization using position term
-            initializers[token] = get_token_ids(f"position {desc}, {position:.4f}")
+            #initializers[token] = get_token_ids(f"position {desc}, {position:.4f}")
+            initializers[token] = get_token_ids(f"{position:.8f}")
         else:
             # For coordinate-specific tokens if any
             initializers[token] = []
@@ -126,7 +127,7 @@ def get_token_initializers(
 
 if __name__ == "__main__":
     # Generate coordinate tokens
-    coordinate_tokens = generate_coordinate_tokens()
+    coordinate_tokens = generate_coordinate_tokens(100)
     print(f"Generated {len(coordinate_tokens)} coordinate tokens")
 
     # Load a tokenizer
@@ -135,7 +136,7 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained("lmms-lab/llava-onevision-qwen2-0.5b-si")
 
     # Get initializers for coordinate tokens
-    initializers = get_token_initializers(tokenizer, coordinate_tokens)
+    initializers = get_token_initializers(tokenizer, coordinate_tokens, 100)
     print(f"Generated initializers for {len(initializers)} tokens")
 
     # Print examples
