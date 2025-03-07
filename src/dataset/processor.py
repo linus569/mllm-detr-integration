@@ -519,10 +519,10 @@ class Processor(ProcessorMixin):
 
             # Convert bbox to tensor, values in attrib
             if bbox is not None:
-                x0 = float(bbox.get("x0", -1))
-                y0 = float(bbox.get("y0", -1))
-                x1 = float(bbox.get("x1", -1))
-                y1 = float(bbox.get("y1", -1))
+                x0 = float(bbox.get("x_min", -1))
+                y0 = float(bbox.get("y_min", -1))
+                x1 = float(bbox.get("x_max", -1))
+                y1 = float(bbox.get("y_max", -1))
                 if all(v >= 0 for v in [x0, y0, x1, y1]):
                     text_bbox[i] = torch.tensor(
                         [x0, y0, x1, y1], dtype=torch.float32, device=device
