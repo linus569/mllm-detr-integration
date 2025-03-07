@@ -4,42 +4,47 @@ from typing import Dict, List
 def generate_coordinate_tokens(num_bins: int, shared_coords: bool = True) -> List[str]:
     new_tokens = []
 
-    new_tokens = ["<object>", "</object>", "<bbox>", "</bbox>", "<class>", "</class>", "<annotation>", "</annotation>"]
-    
+    new_tokens = [
+        "<object>", # TODO: leave object open like bbox and set attribute class_name
+        "</object>",
+        "<bbox",
+        "<class>",
+        "</class>",
+        "<annotation>",
+        "</annotation>",
+    ]
+
     return new_tokens
+
 
 def spatial_position_initialization(tokenizer, coordinate_tokens, num_bins):
     """Initialize tokens using spatial position concepts already in vocabulary."""
     initializers = {}
-    
+
     # Helper function to get token IDs for a word or phrase
     def get_token_ids(text):
         return tokenizer.encode(text, add_special_tokens=False)
-    
 
-    
     for token in coordinate_tokens:
         if token == "<annotation>":
-            initializers[token] = get_token_ids("<annotation")
+            initializers[token] = get_token_ids("<annotation>")
         elif token == "</annotation>":
-            initializers[token] = get_token_ids("</annotation")
+            initializers[token] = get_token_ids("</annotation>")
         elif token == "<object>":
-            initializers[token] = get_token_ids("<object")
+            initializers[token] = get_token_ids("<object>")
         elif token == "</object>":
-            initializers[token] = get_token_ids("</object")
-        elif token == "<bbox>":
+            initializers[token] = get_token_ids("</object>")
+        elif token == "<bbox":
             initializers[token] = get_token_ids("<bbox")
-        elif token == "</bbox>":
-            initializers[token] = get_token_ids("</bbox>")
         elif token == "<class>":
-            initializers[token] = get_token_ids("<class")
+            initializers[token] = get_token_ids("<class>")
         elif token == "</class>":
-            initializers[token] = get_token_ids("</class")
+            initializers[token] = get_token_ids("</class>")
         else:
             initializers[token] = []
 
-    
     return initializers
+
 
 def get_token_initializers(
     tokenizer, coordinate_tokens: List[str], num_bin: int
@@ -84,7 +89,9 @@ def get_token_initializers(
     #     initializers[token] = []
 
     # Init with spatial position concepts
-    initializers = spatial_position_initialization(tokenizer, coordinate_tokens, num_bin)
+    initializers = spatial_position_initialization(
+        tokenizer, coordinate_tokens, num_bin
+    )
 
     return initializers
 

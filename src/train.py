@@ -310,11 +310,33 @@ class Trainer:
         )
         epochs = self.config.epochs
 
-        # Create optimizer
+        # Create optimizer, different lr for projection layer and frozen embedding layers
+        # Group parameters by learning rate
+        projection_params = []
+        frozen_params = []
+        other_params = []
+
+        for name, param in self.model.named_parameters():
+            if not param.requires_grad:
+                continue
+            elif "projection" in name:
+                projection_params.append(param)
+            elif "embeddings" in name:
+                frozen_params.append(param)
+            else:
+                other_params.append(param)
+
+        # Create parameter groups with different learning rates
+        param_groups = [
+            {"params": projection_params, "lr": self.config.lr * 1.},  # Higher LR for projection
+            {"params": frozen_params, "lr": self.config.lr * 0.1},    # Lower LR for embeddings
+            {"params": other_params, "lr": self.config.lr}            # Default LR for rest
+        ]
+
         params = [p for p in self.model.parameters() if p.requires_grad]
         log.info(f"Number of trainable parameters: {sum(p.numel() for p in params)}")
         # TODO: add weight_decay to conf
-        self.optimizer = AdamW(params, lr=self.config.lr)
+        self.optimizer = AdamW(param_groups, lr=self.config.lr)
 
         # Create lr scheduler
         num_training_steps = len(self.train_dataloader) * epochs
