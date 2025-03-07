@@ -76,3 +76,5 @@ class ExperimentConfig:
     num_image_tokens: int = MISSING
     image_token: str = MISSING
     num_coordinate_bins: int = MISSING
+
+    add_special_tokens: bool = True

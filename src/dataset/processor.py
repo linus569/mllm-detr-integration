@@ -145,7 +145,7 @@ class Processor(ProcessorMixin):
         xml_str = "<annotation>"
         for classes_str, bbox in zip(list_classes_str, list_bboxes):
             x0, y0, x1, y1 = bbox
-            bbox_xml = f"<bbox x0='{x0:.5}' y0='{y0:.5}' x1='{x1:.5}' y1='{y1:.5}'/>"
+            bbox_xml = f"<bbox x_min='{x0:.5}' y_min='{y0:.5}' x_max='{x1:.5}' y_max='{y1:.5}'/>"
             xml_str += f"<object><class>{classes_str}</class>{bbox_xml}</object>"
         # print(xml_str)
         return xml_str + "</annotation>"
@@ -219,8 +219,8 @@ class Processor(ProcessorMixin):
             # prompt = "Detect all objects in the image and output ONLY a valid JSON array of objects. Each object must have a 'class' (string name) and 'bbox' (list of 4 special coordinate tokens [x_min, y_min, x_max, y_max]). Format: [{'class': 'person', 'bbox': ['<coord_2>', '<coord_3>', '<coord_5>', '<coord_8>']}, {'class': 'car', 'bbox': ['<coord_6>', '<coord_7>', '<coord_9>', '<coord_9>']}]. Each <coord_X> token represents a quantized position. Include all visible objects, even if partially visible. Output nothing but the JSON array."
             # prompt = "Detect all objects in the image and output ONLY a valid JSON array of objects. Each object must have a 'class' (string name) and 'bbox' (list of 4 special coordinate tokens). Format: [{'class': 'person', 'bbox': ['<coord_2>', '<coord_3>', '<coord_5>', '<coord_8>']}, {'class': 'car', 'bbox': ['<coord_6>', '<coord_7>', '<coord_9>', '<coord_9>']}]. Each <coord_X> token represents a quantized position. Include all visible objects, even if partially visible. Output nothing but the JSON array."
             
-            example_xml = "<annotation><object><class>car</class><bbox x0='0.14673' y0='0.36377' x1='0.18527' y1='0.44438'/></object><object><class>surfboard</class><bbox x0='0.0' y0='0.41329' x1='0.86317' y1='0.67906'/></object></annotation>"
-            prompt = f"Detect all objects in the image and output ONLY a valid XML of list of object. Each <object> must have a <class> (string name) and <bbox> (list of 4 normalized coordinates [x_min, y_min, x_max, y_max]). Format: {example_xml}. Include all visible objects, even if partially visible. Output nothing but the XML."
+            example_xml = "<annotation><object><class>car</class><bbox x_min='0.14673' y_min='0.36377' x_max='0.18527' y_max='0.44438'/></object><object><class>surfboard</class><bbox x_min='0.0' y_min='0.41329' x_max='0.86317' y_max='0.67906'/></object></annotation>"
+            prompt = f"Detect all objects in the image and output ONLY a valid XML of <annotation> with multiple <object>. Each <object> must have a <class> (string name) and <bbox> (4 normalized coordinates x_min, y_min, x_max, y_max). Format: {example_xml}. Include all visible objects, even if partially visible. Output nothing but the XML."
 
         # system_text = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
         # system_text = "<|im_start|>system\nYou are a helpful assistant trained to detect objects in images and output their locations in a standardized JSON format.<|im_end|>\n"

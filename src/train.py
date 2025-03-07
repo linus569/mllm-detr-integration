@@ -376,13 +376,13 @@ def run_training(config: ExperimentConfig):
     device = torch.device("cuda" if torch.cuda.is_available() else config.device)
     log.info(f"Using device: {device}")
 
-    processor = Processor.from_config(config, add_special_tokens=True)
+    processor = Processor.from_config(config, add_special_tokens=config.add_special_tokens)
     model = VisionLanguageModel(
         config=config,
         image_token_index=processor.image_token_index,
         num_new_tokens=len(processor.special_tokens),
         initializers=processor.special_tokens_initializer,
-        do_init=True,
+        do_init=config.add_special_tokens,
     ).to(device)
 
     if not config.debug:
