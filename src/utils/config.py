@@ -30,6 +30,7 @@ class ExperimentConfig:
     model_name: str = "lmms-lab/llava-onevision-qwen2-0.5b-si"
 
     checkpoint_dir: str = "checkpoints"
+    load_checkpoint: Optional[str] = None
 
     train: bool = True
     evaluate: bool = True

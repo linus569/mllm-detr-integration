@@ -385,6 +385,11 @@ def run_training(config: ExperimentConfig):
         do_init=config.add_special_tokens,
     ).to(device)
 
+    if config.load_checkpoint:
+        path = os.path.join(config.checkpoint_dir, config.load_checkpoint)
+        checkpoint = torch.load(path, map_location=device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+
     if not config.debug:
         model = torch.compile(model)  # 2.3 it/s without -> 4.5 it/s with
 
