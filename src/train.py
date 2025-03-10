@@ -64,7 +64,7 @@ class Trainer:
 
         self.dtype = None
         if self.config.torch_dtype is not None:
-            self.dtype = getattr(torch, self.config.torch_dtype, default=None)
+            self.dtype = getattr(torch, self.config.torch_dtype, None)
 
         os.makedirs(self.checkpoint_dir, exist_ok=True)
 
