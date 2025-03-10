@@ -325,7 +325,7 @@ class Trainer:
                 continue
             elif "projector" in name:
                 projection_params.append(param)
-            elif "embedding" in name:
+            elif "embedding" in name or "lm_head" in name:
                 frozen_params.append(param)
             else:
                 other_params.append(param)
@@ -338,11 +338,8 @@ class Trainer:
 
         # Create parameter groups with different learning rates
         param_groups = [
-            # Higher LR for projection
-            {"params": projection_params, "lr": self.config.lr * 1.0},
-            # Lower LR for embeddings
-            {"params": frozen_params, "lr": self.config.lr * 0.1},
-            # Default LR for rest
+            {"params": projection_params, "lr": self.config.lr},
+            {"params": frozen_params, "lr": self.config.lr }, #*0.1
             {"params": other_params, "lr": self.config.lr},
         ]
 

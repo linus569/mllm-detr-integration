@@ -382,6 +382,7 @@ class Processor(ProcessorMixin):
         # Prepare lables
         labels = tokenized["input_ids"].clone()
         # TODO: make image_token_id as attribute
+        labels[tokenized["attention_mask"] == 0] = -100 
         labels[labels == self.tokenizer.pad_token_id] = -100  # Mask padding tokens
         labels[labels == self.image_token_index] = -100  # Mask image tokens
         labels[loss_masks == 0] = -100  # Mask everything except the answer tokens
