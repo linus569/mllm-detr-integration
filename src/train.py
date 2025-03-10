@@ -62,6 +62,10 @@ class Trainer:
             "cuda" if torch.cuda.is_available() else "cpu", enabled=self.config.use_amp
         )
 
+        self.dtype = None
+        if self.config.torch_dtype is not None:
+            self.dtype = getattr(torch, self.config.torch_dtype, default=None)
+
         os.makedirs(self.checkpoint_dir, exist_ok=True)
 
     def train(self, num_epochs=None):
@@ -155,7 +159,7 @@ class Trainer:
     def train_step(self, step, input_ids, attention_mask, images, labels):
         with autocast(
             device_type=self.device.type,
-            # dtype=self.model.torch_dtype,  # torch.bfloat16, more stable than float16
+            dtype=self.dtype,  # self.model.torch_dtype,  # torch.bfloat16, more stable than float16
             enabled=self.config.use_amp,
         ):
             outputs = self.model(
@@ -218,7 +222,7 @@ class Trainer:
             # Generate predictions
             with autocast(
                 device_type=self.device.type,
-                # dtype=self.model.torch_dtype,
+                dtype=self.dtype,
                 enabled=self.config.use_amp,
             ):
                 outputs = self.model.generate(
@@ -319,22 +323,29 @@ class Trainer:
         for name, param in self.model.named_parameters():
             if not param.requires_grad:
                 continue
-            elif "projection" in name:
+            elif "projector" in name:
                 projection_params.append(param)
-            elif "embeddings" in name:
+            elif "embedding" in name:
                 frozen_params.append(param)
             else:
                 other_params.append(param)
 
-        # Create parameter groups with different learning rates
-        param_groups = [
-            {"params": projection_params, "lr": self.config.lr * 1.},  # Higher LR for projection
-            {"params": frozen_params, "lr": self.config.lr * 0.1},    # Lower LR for embeddings
-            {"params": other_params, "lr": self.config.lr}            # Default LR for rest
-        ]
-
         params = [p for p in self.model.parameters() if p.requires_grad]
         log.info(f"Number of trainable parameters: {sum(p.numel() for p in params)}")
+        log.info(
+            f"Projection params: {sum(p.numel() for p in projection_params)}, Embedding params: {sum(p.numel() for p in frozen_params)}, Other params: {sum(p.numel() for p in other_params)}"
+        )
+
+        # Create parameter groups with different learning rates
+        param_groups = [
+            # Higher LR for projection
+            {"params": projection_params, "lr": self.config.lr * 1.0},
+            # Lower LR for embeddings
+            {"params": frozen_params, "lr": self.config.lr * 0.1},
+            # Default LR for rest
+            {"params": other_params, "lr": self.config.lr},
+        ]
+
         # TODO: add weight_decay to conf
         self.optimizer = AdamW(param_groups, lr=self.config.lr)
 
@@ -376,12 +387,18 @@ def run_training(config: ExperimentConfig):
     device = torch.device("cuda" if torch.cuda.is_available() else config.device)
     log.info(f"Using device: {device}")
 
-    processor = Processor.from_config(config, add_special_tokens=config.add_special_tokens)
+    processor = Processor.from_config(
+        config, add_special_tokens=config.add_special_tokens
+    )
     model = VisionLanguageModel(
         config=config,
         image_token_index=processor.image_token_index,
-        num_new_tokens=len(processor.special_tokens),
-        initializers=processor.special_tokens_initializer,
+        num_new_tokens=(
+            len(processor.special_tokens) if config.add_special_tokens else 0
+        ),
+        initializers=(
+            processor.special_tokens_initializer if config.add_special_tokens else None
+        ),
         do_init=config.add_special_tokens,
     ).to(device)
 
