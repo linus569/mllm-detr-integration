@@ -134,6 +134,18 @@ class VisionLanguageModel(torch.nn.Module):
 
         return missing, unexpected
 
+    def tie_weights(self):
+        # TODO: if self.language_config.tie_word_embeddings:
+        output_embeddings: PartiallyFrozenLMHead = self.model.get_output_embeddings()
+        input_embeddings: PartiallyFrozenEmbedding = self.model.get_input_embeddings()
+
+        output_embeddings.frozen_lm_head.weight = (
+            input_embeddings.frozen_embedding.weight
+        )
+        output_embeddings.trainable_lm_head.weight = (
+            input_embeddings.trainable_embedding.weight
+        )
+
     def _get_image_features(self, pixel_values: torch.FloatTensor) -> torch.FloatTensor:
         # Image feature extraction
         if pixel_values.ndim == 5:  # If patches are used

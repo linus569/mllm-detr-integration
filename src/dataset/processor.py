@@ -105,8 +105,9 @@ class Processor(ProcessorMixin):
         """Initializers for special tokens."""
         # TODO: definit initialization scheme for special tokens
         num_bins = self.config.num_coordinate_bins
+        tok = AutoTokenizer.from_pretrained(self.config.model_name)
         initializers = get_token_initializers(
-            self.tokenizer, self.special_tokens, num_bins
+            tok, self.special_tokens, num_bins
         )
         # empty list for random initialization
         return [initializers.get(token, []) for token in self.special_tokens]
