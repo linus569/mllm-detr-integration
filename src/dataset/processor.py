@@ -106,9 +106,7 @@ class Processor(ProcessorMixin):
         # TODO: definit initialization scheme for special tokens
         num_bins = self.config.num_coordinate_bins
         tok = AutoTokenizer.from_pretrained(self.config.model_name)
-        initializers = get_token_initializers(
-            tok, self.special_tokens, num_bins
-        )
+        initializers = get_token_initializers(tok, self.special_tokens, num_bins)
         # empty list for random initialization
         return [initializers.get(token, []) for token in self.special_tokens]
 
@@ -119,10 +117,11 @@ class Processor(ProcessorMixin):
             "input_ids"
         ]
 
-    def bin_to_coord(self, bin_idx: int) -> float:
+    def bin_to_coord(self, bin_idx: List[int]) -> List[float]:
         """Convert bin indix to normalized coordinate."""
         num_bins = self.config.num_coordinate_bins
-        return bin_idx / (num_bins - 1) if num_bins > 1 else 0.0
+        bin_idx = np.array(bin_idx)
+        return bin_idx / (num_bins - 1) if num_bins > 1 else [0.0] * len(bin_idx)
 
     def coord_to_bin(self, coord: List[List[float]]) -> List[List[int]]:
         """Convert normalized coordinate bbox batch to bin indices."""
@@ -144,9 +143,12 @@ class Processor(ProcessorMixin):
     def format_bbox_to_xml(self, list_classes_str, list_bboxes):
         """Returns list in xml format:"""
         xml_str = "<annotation>"
-        for classes_str, bbox in zip(list_classes_str, list_bboxes):
+        list_bboxes_binned = self.coord_to_bin(list_bboxes)
+        for classes_str, bbox in zip(list_classes_str, list_bboxes_binned):
             x0, y0, x1, y1 = bbox
-            bbox_xml = f"<bbox x_min='{x0:.5}' y_min='{y0:.5}' x_max='{x1:.5}' y_max='{y1:.5}'/>"
+            length = len(str(self.config.num_coordinate_bins - 1))
+
+            bbox_xml = f"<bbox><x{x0:0{length}d}/><y{y0:0{length}d}/><x{x1:0{length}d}/><y{y1:0{length}d}/></bbox>"
             xml_str += f"<object><class>{classes_str}</class>{bbox_xml}</object>"
         # print(xml_str)
         return xml_str + "</annotation>"
@@ -219,9 +221,9 @@ class Processor(ProcessorMixin):
             # prompt = "Output ONLY a JSON array of detected objects: [{'class': 'person', 'bbox': [x_min, y_min, x_max, y_max]}] with normalized coordinates (0-1)."
             # prompt = "Detect all objects in the image and output ONLY a valid JSON array of objects. Each object must have a 'class' (string name) and 'bbox' (list of 4 special coordinate tokens [x_min, y_min, x_max, y_max]). Format: [{'class': 'person', 'bbox': ['<coord_2>', '<coord_3>', '<coord_5>', '<coord_8>']}, {'class': 'car', 'bbox': ['<coord_6>', '<coord_7>', '<coord_9>', '<coord_9>']}]. Each <coord_X> token represents a quantized position. Include all visible objects, even if partially visible. Output nothing but the JSON array."
             # prompt = "Detect all objects in the image and output ONLY a valid JSON array of objects. Each object must have a 'class' (string name) and 'bbox' (list of 4 special coordinate tokens). Format: [{'class': 'person', 'bbox': ['<coord_2>', '<coord_3>', '<coord_5>', '<coord_8>']}, {'class': 'car', 'bbox': ['<coord_6>', '<coord_7>', '<coord_9>', '<coord_9>']}]. Each <coord_X> token represents a quantized position. Include all visible objects, even if partially visible. Output nothing but the JSON array."
-            
-            example_xml = "<annotation><object><class>car</class><bbox x_min='0.14673' y_min='0.36377' x_max='0.18527' y_max='0.44438'/></object><object><class>surfboard</class><bbox x_min='0.0' y_min='0.41329' x_max='0.86317' y_max='0.67906'/></object></annotation>"
-            prompt = f"Detect all objects in the image and output ONLY a valid XML of <annotation> with multiple <object>. Each <object> must have a <class> (string name) and <bbox> (4 normalized coordinates x_min, y_min, x_max, y_max). Format: {example_xml}. Include all visible objects, even if partially visible. Output nothing but the XML."
+
+            example_xml = "<annotation><object><class>car</class><bbox><x14/><y36/><x18/><y44/></bbox></object><object><class>surfboard</class><bbox><x0/><y41/><x86/><y67/></bbox></object></annotation>"
+            prompt = f"Detect all objects in the image and output ONLY a valid XML of <annotation> with multiple <object>. Each <object> must have a <class> (string name) and <bbox> (containing 4 relative position tokens x min, y min, x max, y max). Format: {example_xml}. Include all visible objects, even if partially visible. Output nothing but the XML."
 
         # system_text = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
         # system_text = "<|im_start|>system\nYou are a helpful assistant trained to detect objects in images and output their locations in a standardized JSON format.<|im_end|>\n"
@@ -382,7 +384,7 @@ class Processor(ProcessorMixin):
         # Prepare lables
         labels = tokenized["input_ids"].clone()
         # TODO: make image_token_id as attribute
-        labels[tokenized["attention_mask"] == 0] = -100 
+        labels[tokenized["attention_mask"] == 0] = -100
         labels[labels == self.tokenizer.pad_token_id] = -100  # Mask padding tokens
         labels[labels == self.image_token_index] = -100  # Mask image tokens
         labels[loss_masks == 0] = -100  # Mask everything except the answer tokens
@@ -464,6 +466,7 @@ class Processor(ProcessorMixin):
         category_dict = dataset.cat_name_to_id
 
         results = []
+        failed = 0  # TODO: return failed
 
         for i, text in enumerate(generated_text):
             try:
@@ -474,6 +477,7 @@ class Processor(ProcessorMixin):
                 )
             except Exception as e:
                 logger.warning(f"Error processing item {i} in batch: {e}")
+                failed += 1
                 results.append(
                     {
                         "boxes": torch.zeros((0, 4), device=device),
@@ -487,18 +491,11 @@ class Processor(ProcessorMixin):
     def _postprocess_xml(self, text: str, cat_name_to_id: Dict[str, int], device: str):
         assert text is not None, "No text provided"
 
-        # def safe_parse(xml_str):
-        #     parser = etree.XMLParser(recover=True)
-        #     root = etree.fromstring(xml_str, parser=parser)
-        #     print(root[1][1].attrib)
-        #     return etree.tostring(root, pretty_print=True)
-        #
-        
         start_idx = text.find("<annotation>")
         end_idx = text.rfind("</annotation>") + len("</annotation>")
         if start_idx == -1 or end_idx == 0:
             raise ValueError("Invalid XML format")
-        
+
         xml_text = text[start_idx:end_idx]
         parser = etree.XMLParser(recover=True)
         root = etree.fromstring(xml_text, parser=parser)
@@ -521,17 +518,22 @@ class Processor(ProcessorMixin):
 
             # Convert bbox to tensor, values in attrib
             if bbox is not None:
-                x0 = float(bbox.get("x_min", -1))
-                y0 = float(bbox.get("y_min", -1))
-                x1 = float(bbox.get("x_max", -1))
-                y1 = float(bbox.get("y_max", -1))
-                if all(v >= 0 for v in [x0, y0, x1, y1]):
+                childs = bbox.getchildren()
+                # <x0/><y20/><x30/><y32/> get bins from token name
+                if len(childs) == 4:
+                    x0 = int(childs[0].tag[1:])
+                    y0 = int(childs[1].tag[1:])
+                    x1 = int(childs[2].tag[1:])
+                    y1 = int(childs[3].tag[1:])
+
                     text_bbox[i] = torch.tensor(
-                        [x0, y0, x1, y1], dtype=torch.float32, device=device
+                        self.bin_to_coord([x0, y0, x1, y1]),
+                        dtype=torch.float32,
+                        device=device,
                     )
                     text_labels[i] = cat_name_to_id.get(class_name, -1)
                     valid_count += 1
-                
+
         if valid_count < num_objects:
             text_bbox = text_bbox[:valid_count]
             text_labels = text_labels[:valid_count]
@@ -545,6 +547,9 @@ class Processor(ProcessorMixin):
             "scores": text_scores,
         }
 
+    ################
+    # JSON Postprocessing - not used
+    ################
     def postprocess_json_batch(
         self,
         sequences: torch.LongTensor,

@@ -5,14 +5,23 @@ def generate_coordinate_tokens(num_bins: int, shared_coords: bool = True) -> Lis
     new_tokens = []
 
     new_tokens = [
-        "<object>", # TODO: leave object open like bbox and set attribute class_name
+        "<object>",  # TODO: leave object open like bbox and set attribute class_name
         "</object>",
-        "<bbox",
+        "<bbox>",
+        "</bbox>",
         "<class>",
         "</class>",
         "<annotation>",
         "</annotation>",
     ]
+
+    for i in range(num_bins):
+        length = len(str(num_bins - 1))
+        new_tokens.append(f"<x{i:0{length}d}/>")
+        new_tokens.append(f"<y{i:0{length}d}/>")
+
+        # new_tokens.append(f"<x{i}/>")
+        # new_tokens.append(f"<y{i}/>")
 
     return new_tokens
 
@@ -27,19 +36,25 @@ def spatial_position_initialization(tokenizer, coordinate_tokens, num_bins):
 
     for token in coordinate_tokens:
         if token == "<annotation>":
-            initializers[token] = get_token_ids("<annotation>")
+            initializers[token] = get_token_ids("begin annotation")
         elif token == "</annotation>":
-            initializers[token] = get_token_ids("</annotation>")
+            initializers[token] = get_token_ids("end annotation")
         elif token == "<object>":
-            initializers[token] = get_token_ids("<object>")
+            initializers[token] = get_token_ids("begin object")
         elif token == "</object>":
-            initializers[token] = get_token_ids("</object>")
-        elif token == "<bbox":
-            initializers[token] = get_token_ids("<bbox")
+            initializers[token] = get_token_ids("end object")
+        elif token == "<bbox>":
+            initializers[token] = get_token_ids("begin bbox")
+        elif token == "</bbox>":
+            initializers[token] = get_token_ids("end bbox")
         elif token == "<class>":
-            initializers[token] = get_token_ids("<class>")
+            initializers[token] = get_token_ids("begin class")
         elif token == "</class>":
-            initializers[token] = get_token_ids("</class>")
+            initializers[token] = get_token_ids("end class")
+        elif token.startswith("<x"):
+            initializers[token] = get_token_ids(f"coordinate x{token[2:-2]}")
+        elif token.startswith("<y"):
+            initializers[token] = get_token_ids(f"coordinate y{token[2:-2]}")
         else:
             initializers[token] = []
 
