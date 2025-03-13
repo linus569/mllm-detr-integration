@@ -79,3 +79,4 @@ class ExperimentConfig:
     num_coordinate_bins: int = MISSING
 
     add_special_tokens: bool = True
+    freeze_model: bool = True

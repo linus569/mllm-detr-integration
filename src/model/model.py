@@ -40,8 +40,9 @@ class VisionLanguageModel(torch.nn.Module):
         self.projector = self.model.get_model().mm_projector
 
         # freeze all parameters
-        for param in self.model.parameters():
-            param.requires_grad = False
+        if config.freeze_model:
+            for param in self.model.parameters():
+                param.requires_grad = False
 
         # check if image_encoder params are frozen
         for param in self.image_encoder.parameters():
