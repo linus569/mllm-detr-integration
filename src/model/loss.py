@@ -41,6 +41,7 @@ def masked_cross_entropy(
     shift_labels = shift_labels.to(shift_logits.device)
 
     # compute loss
+    # TODO: reduction correct?
     reduction = "sum" if num_items_in_batch is not None else "mean"
     loss = F.cross_entropy(
         shift_logits, shift_labels, ignore_index=ignore_index, reduction=reduction

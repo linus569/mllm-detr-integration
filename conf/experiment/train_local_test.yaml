@@ -31,6 +31,6 @@ pad_to_multiple_of: 128
 temperature: 0.3
 use_amp: false
 
-num_coordinate_bins: 10 # florence paper uses 1000
+num_coordinate_bins: 100 # florence paper uses 1000
 #  image_size: Tuple[int, int] = (384, 384),
 #    num_image_tokens: int = 729,
