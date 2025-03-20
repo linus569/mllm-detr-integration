@@ -395,6 +395,7 @@ class Processor(ProcessorMixin):
             "images": images,
             "labels": labels,
             # for evaluation purposes
+            # TODO: put here "targets": self.postprocess_target_batch(...)
             "instance_bboxes": transformed_bboxes,
             "instance_classes_id": transformed_classes_id,
             "bbox_str": bbox_str,

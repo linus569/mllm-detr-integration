@@ -1,0 +1,1 @@
+# TODO: move image tranformations to image_processor.py
