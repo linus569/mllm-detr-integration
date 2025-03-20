@@ -1,3 +1,4 @@
+from functools import cached_property
 import json
 import logging
 import random
@@ -133,10 +134,16 @@ def save_training_checkpoint(todo):
 class JSONStoppingCriteria(StoppingCriteria):
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
-        self.end_sequence = self.tokenizer.encode(
+    
+    @cached_property
+    def end_sequence(self):
+        return self.tokenizer.encode(
             "<|im_end|>"  # "]}]<|im_end|>"
         )  # Get token ID for closing bracket
-        self.length = len(self.end_sequence)
+    
+    @cached_property
+    def length(self):
+        return len(self.end_sequence)
 
     def __call__(self, input_ids, scores, **kwargs):
         # Stop if we find the end sequence

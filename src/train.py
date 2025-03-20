@@ -3,6 +3,8 @@ import os
 import time
 
 from dataset.processor import Processor
+from dataset.processor_fasterrcnn import FastRCNNProcessor
+from model.fastrcnn_adapter import FastRCNNAdapter
 from utils.config import ExperimentConfig
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -109,6 +111,11 @@ class Trainer:
                 attention_mask = batch["attention_mask"].to(self.device)
                 images = batch["images"].to(self.device)
                 labels = batch["labels"].to(self.device)
+
+                if self.config.model_name == "fasterrcnn":
+                    labels = self.processor.postprocess_target_batch(
+                        batch=batch, device=self.device
+                    )
 
                 # Forward pass
                 outputs = self.train_step(
@@ -236,10 +243,15 @@ class Trainer:
                     top_k=50,
                 )
 
-            # Parse model ouput to bbox and lables
-            generated_text, predicted_boxes = self.processor.postprocess_xml_batch(
-                outputs, val_dataloader.dataset, self.device
-            )
+            if self.config.model_name == "fasterrcnn":
+                predicted_boxes = outputs
+                generated_text = None
+            else:
+                # Parse model ouput to bbox and lables
+                generated_text, predicted_boxes = self.processor.postprocess_xml_batch(
+                    outputs, val_dataloader.dataset, self.device
+                )
+
             target_boxes = self.processor.postprocess_target_batch(
                 batch=batch, device=self.device
             )
@@ -339,7 +351,7 @@ class Trainer:
         # Create parameter groups with different learning rates
         param_groups = [
             {"params": projection_params, "lr": self.config.lr},
-            {"params": frozen_params, "lr": self.config.lr }, #*0.1
+            {"params": frozen_params, "lr": self.config.lr},  # *0.1
             {"params": other_params, "lr": self.config.lr},
         ]
 
@@ -384,20 +396,26 @@ def run_training(config: ExperimentConfig):
     device = torch.device("cuda" if torch.cuda.is_available() else config.device)
     log.info(f"Using device: {device}")
 
-    processor = Processor.from_config(
-        config, add_special_tokens=config.add_special_tokens
-    )
-    model = VisionLanguageModel(
-        config=config,
-        image_token_index=processor.image_token_index,
-        num_new_tokens=(
-            len(processor.special_tokens) if config.add_special_tokens else 0
-        ),
-        initializers=(
-            processor.special_tokens_initializer if config.add_special_tokens else None
-        ),
-        do_init=config.add_special_tokens,
-    ).to(device)
+    if config.model_name == "fasterrcnn":
+        processor = FastRCNNProcessor.from_config(config)
+        model = FastRCNNAdapter(config)
+    else:
+        processor = Processor.from_config(
+            config, add_special_tokens=config.add_special_tokens
+        )
+        model = VisionLanguageModel(
+            config=config,
+            image_token_index=processor.image_token_index,
+            num_new_tokens=(
+                len(processor.special_tokens) if config.add_special_tokens else 0
+            ),
+            initializers=(
+                processor.special_tokens_initializer
+                if config.add_special_tokens
+                else None
+            ),
+            do_init=config.add_special_tokens,
+        ).to(device)
 
     if config.load_checkpoint:
         path = os.path.join(config.checkpoint_dir, config.load_checkpoint)
