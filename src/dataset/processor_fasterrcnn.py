@@ -1,24 +1,13 @@
-import json
 import logging
-import re
-from functools import cached_property
 from typing import Dict, List, Tuple, Union
 
 import albumentations as A
 import numpy as np
 import torch
 from albumentations.pytorch import ToTensorV2
-from lxml import etree
-from PIL import Image
-from tokenizers import AddedToken
-from torch.utils.data import Subset
-from transformers import AutoTokenizer
 from transformers.processing_utils import ProcessorMixin
-from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
-from dataset.dataset import COCODataset
 from utils.config import ExperimentConfig
-from utils.token_utils import generate_coordinate_tokens, get_token_initializers
 
 logger = logging.getLogger(__name__)
 
@@ -38,17 +27,7 @@ class FastRCNNProcessor(ProcessorMixin):
 
         """
         self.config = config
-
         self.image_size = self.config.image_size
-        self.image_token = self.config.image_token
-        self.num_image_tokens = self.config.num_image_tokens
-        self.max_length = self.config.max_tokens
-        self.pad_to_multiple_of = self.config.pad_to_multiple_of
-
-        self.answer_start_token = "<|im_start|>assistant\n"  # TODO: config
-        self.use_special_coord_tokens = False
-
-        self.tokenizer = None
 
         # TODO: define transformes in config
         self.bbox_transform = A.Compose(
@@ -65,11 +44,9 @@ class FastRCNNProcessor(ProcessorMixin):
         )
 
     @staticmethod
-    def from_config(config: ExperimentConfig, add_special_tokens: bool = True):
+    def from_config(config: ExperimentConfig):
         """Create a new processor from a configuration."""
-
         processor = FastRCNNProcessor(config=config)
-
         return processor
 
     ################
@@ -84,15 +61,6 @@ class FastRCNNProcessor(ProcessorMixin):
             y1 / image_height,
             x2 / image_width,
             y2 / image_height,
-        )
-
-    def denormalize_bbox(self, bbox, image_width, image_height):
-        x1, y1, x2, y2 = bbox
-        return (
-            x1 * image_width,
-            y1 * image_height,
-            x2 * image_width,
-            y2 * image_height,
         )
 
     def preprocess_img_text_batch(
@@ -119,7 +87,6 @@ class FastRCNNProcessor(ProcessorMixin):
         batch_size = len(batch)
         transformed_images = [None] * batch_size
         transformed_bboxes = [None] * batch_size
-        transformed_classes = [None] * batch_size
         transformed_classes_id = [None] * batch_size
 
         for i, sample in enumerate(batch):
@@ -148,7 +115,6 @@ class FastRCNNProcessor(ProcessorMixin):
                 class_ids=classes_id,
             )
             transformed_images[i] = transformed["image"]
-            transformed_classes[i] = transformed["class_labels"]
             transformed_classes_id[i] = torch.tensor(
                 transformed["class_ids"], dtype=torch.int64
             )
@@ -195,10 +161,8 @@ class FastRCNNProcessor(ProcessorMixin):
         """
         if bbox.numel() == 0:
             return torch.zeros((0, 4), device=bbox.device, dtype=bbox.dtype)
-
         if bbox.dim() == 1:
             bbox = bbox.unsqueeze(0)
-
         width, height = size
 
         # Create scaling factor tensor
@@ -208,7 +172,6 @@ class FastRCNNProcessor(ProcessorMixin):
 
         # Vectorized multiplication
         bbox_unnorm = bbox * scale
-
         return bbox_unnorm if bbox.dim() == 2 else bbox_unnorm.squeeze(0)
 
     def postprocess_target_batch(self, batch: Dict[str, torch.Tensor], device: str):
