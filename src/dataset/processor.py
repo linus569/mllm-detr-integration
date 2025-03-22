@@ -144,6 +144,7 @@ class Processor(ProcessorMixin):
         """Returns list in xml format:"""
         xml_str = "<annotation>"
         list_bboxes_binned = self.coord_to_bin(list_bboxes)
+
         for classes_str, bbox in zip(list_classes_str, list_bboxes_binned):
             x0, y0, x1, y1 = bbox
             length = len(str(self.config.num_coordinate_bins - 1))
@@ -265,6 +266,26 @@ class Processor(ProcessorMixin):
             y2 * image_height,
         )
 
+    def _order_bboxes(self, boxes, classes_str, classes_id):
+        if len(boxes) <= 1 or self.config.bbox_ordering == "none":
+            return boxes, classes_str, classes_id
+
+        indices = np.arange(len(boxes))
+
+        if self.config.bbox_ordering == "random":
+            indices = np.random.permutation(indices)
+        elif self.config.bbox_ordering == "size_desc":
+            areas = np.array([(box[2] - box[0]) * (box[3] - box[1]) for box in boxes])
+            indices = indices[np.argsort(areas)[::-1]]
+        else:
+            raise ValueError(f"Invalid bbox ordering: {self.config.bbox_ordering}")
+
+        return (
+            boxes[indices],
+            [classes_str[i] for i in indices],
+            [classes_id[i] for i in indices],
+        )
+
     def preprocess_img_text_batch(
         self, batch: List[Dict], train: bool = True
     ) -> Dict[str, Union[torch.Tensor, List[torch.Tensor]]]:
@@ -313,6 +334,12 @@ class Processor(ProcessorMixin):
                 classes_str = sample["instance_classes_str"]
                 classes_id = sample["instance_classes_id"]
 
+            # Apply bbox ordering
+            boxes, classes_str, classes_id = self._order_bboxes(
+                np.array(boxes), classes_str, classes_id
+            )
+
+            # Apply transformations
             transformed = self.bbox_transform(
                 image=np.array(sample["image"]),
                 bboxes=boxes,
@@ -326,10 +353,9 @@ class Processor(ProcessorMixin):
             )
 
             # Normalize values of bboxes
-            transformed_img = transformed["image"]
             norm_bboxes = [
                 self.normalize_bbox(
-                    bbox, transformed_img.shape[1], transformed_img.shape[2]
+                    bbox, transformed["image"].shape[1], transformed["image"].shape[2]
                 )
                 for bbox in transformed["bboxes"]
             ]
