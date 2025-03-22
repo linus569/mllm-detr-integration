@@ -79,6 +79,17 @@ class Trainer:
         ):
             self.lazy_init_training_objects()
 
+        # verify that trainable embedding layers are not frozen
+        count = 0
+        for name, param in self.model.named_parameters():
+            if "trainable_lm_head" in name:
+                count += param.numel()
+                assert param.requires_grad, f"Embedding layer {name} is frozen"
+            if "trainable_embedding" in name:
+                count += param.numel()
+                assert param.requires_grad, f"Embedding layer {name} is frozen"
+        log.info(f"Trainable embedding layers: {count}")
+
         if num_epochs == None:
             num_epochs = self.config.epochs
 
@@ -138,6 +149,25 @@ class Trainer:
                         },
                         step=step,
                     )
+
+                    
+                    if outputs.logits is not None:
+                        # log num of added tokens in labels
+                        wandb.log(
+                            {
+                                "debug/num_added_tokens_in_labels": np.count_nonzero(np.array(labels > 151646))
+                            }, step=step
+                        )
+
+                        # log logits
+                        wandb.log(
+                            {
+                                #print("annotation tag logit:", logits_masked[0][annotation_tag], "; max logit:", logits_masked[0].max(), " ; max logit index:", logits_masked[0].argmax(), " ; max decoded:", tokenizer.decode(logits_masked[0].argmax()))
+                                "debug/logits_max_value": outputs.logits[:,0].max(),
+                                "debug/logits_max_index": outputs.logits[:,0].argmax(),
+                                "debug/logits_ann_tag_value": outputs.logits[:, 0, 151653]
+                            }, step=step
+                        )
 
                 # Validate
                 if step % self.config.val_freq == 0:
