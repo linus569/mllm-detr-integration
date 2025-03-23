@@ -155,7 +155,7 @@ class Trainer:
                         # log num of added tokens in labels
                         wandb.log(
                             {
-                                "debug/num_added_tokens_in_labels": np.count_nonzero(np.array(labels > 151646))
+                                "debug/num_added_tokens_in_labels": np.count_nonzero(np.array(labels > 151646).cpu())
                             }, step=step
                         )
 
