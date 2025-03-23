@@ -164,9 +164,9 @@ class Trainer:
                             wandb.log(
                                 {
                                     #print("annotation tag logit:", logits_masked[0][annotation_tag], "; max logit:", logits_masked[0].max(), " ; max logit index:", logits_masked[0].argmax(), " ; max decoded:", tokenizer.decode(logits_masked[0].argmax()))
-                                    "debug/logits_max_value": outputs.logits[:,0].max(),
-                                    "debug/logits_max_index": outputs.logits[:,0].argmax(),
-                                    "debug/logits_ann_tag_value": outputs.logits[:, 0, 151653]
+                                    "debug/logits_max_value": outputs.logits[0,0].max(),
+                                    "debug/logits_max_index": outputs.logits[0,0].argmax(),
+                                    "debug/logits_ann_tag_value": outputs.logits[0, 0, 151653]
                                 }, step=step
                             )
                         except Exception as e:
