@@ -153,21 +153,24 @@ class Trainer:
                     
                     if outputs.logits is not None:
                         # log num of added tokens in labels
-                        wandb.log(
-                            {
-                                "debug/num_added_tokens_in_labels": np.count_nonzero(np.array(labels > 151646).cpu())
-                            }, step=step
-                        )
+                        try:
+                            wandb.log(
+                                {
+                                    "debug/num_added_tokens_in_labels": np.count_nonzero(np.array(labels > 151646).cpu())
+                                }, step=step
+                            )
 
-                        # log logits
-                        wandb.log(
-                            {
-                                #print("annotation tag logit:", logits_masked[0][annotation_tag], "; max logit:", logits_masked[0].max(), " ; max logit index:", logits_masked[0].argmax(), " ; max decoded:", tokenizer.decode(logits_masked[0].argmax()))
-                                "debug/logits_max_value": outputs.logits[:,0].max(),
-                                "debug/logits_max_index": outputs.logits[:,0].argmax(),
-                                "debug/logits_ann_tag_value": outputs.logits[:, 0, 151653]
-                            }, step=step
-                        )
+                            # log logits
+                            wandb.log(
+                                {
+                                    #print("annotation tag logit:", logits_masked[0][annotation_tag], "; max logit:", logits_masked[0].max(), " ; max logit index:", logits_masked[0].argmax(), " ; max decoded:", tokenizer.decode(logits_masked[0].argmax()))
+                                    "debug/logits_max_value": outputs.logits[:,0].max(),
+                                    "debug/logits_max_index": outputs.logits[:,0].argmax(),
+                                    "debug/logits_ann_tag_value": outputs.logits[:, 0, 151653]
+                                }, step=step
+                            )
+                        except Exception as e:
+                            log.warning(f"Error logging debug metrics:{e}")
 
                 # Validate
                 if step % self.config.val_freq == 0:
