@@ -28,6 +28,7 @@ class FastRCNNProcessor(ProcessorMixin):
         """
         self.config = config
         self.image_size = self.config.image_size
+        self.tokenizer = None # placeholder, otherwise it will throw an error
 
         # TODO: define transformes in config
         self.bbox_transform = A.Compose(
