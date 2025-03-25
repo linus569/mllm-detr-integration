@@ -47,6 +47,7 @@ class Processor(ProcessorMixin):
         self.pad_to_multiple_of = self.config.pad_to_multiple_of
 
         self.tokenizer = tokenizer
+        self.loaded_tokenizer_len = None
 
         self.answer_start_token = "<|im_start|>assistant\n"  # TODO: config
         self.use_special_coord_tokens = False
@@ -71,6 +72,8 @@ class Processor(ProcessorMixin):
         tokenizer = AutoTokenizer.from_pretrained(config.model_name)
 
         processor = Processor(config=config, tokenizer=tokenizer)
+        # store length of loadedtokenizer (vocab size + special tokens)
+        processor.loaded_tokenizer_len = len(tokenizer)
         if add_special_tokens:
             processor.add_special_tokens()
             processor.use_special_coord_tokens = True

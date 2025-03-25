@@ -20,6 +20,7 @@ class VisionLanguageModel(torch.nn.Module):
         config,
         image_token_index: int,
         num_new_tokens: int = 0,
+        tokenizer_size: int = None,
         initializers: list[list[int]] = None,
         do_init: bool = True,
     ):
@@ -52,6 +53,15 @@ class VisionLanguageModel(torch.nn.Module):
         for param in self.projector.parameters():
             param.requires_grad = True
 
+        # Resize embeddings to correct start size if necessary
+        if self.model.get_input_embeddings().num_embeddings != tokenizer_size:
+            log.warning(
+                f"Tokenizer vocab size {tokenizer_size} does not match model vocab size {self.model.get_input_embeddings().num_embeddings}. Resizing embeddings..."
+            )
+            # Resize token embeddings
+            self.model.resize_token_embeddings(tokenizer_size)
+            log.warning(f"Resized embedding size: {self.model.get_input_embeddings().num_embeddings}")
+
         # Initialize new token embeddings
         self.model.set_input_embeddings(
             PartiallyFrozenEmbedding(
@@ -69,6 +79,10 @@ class VisionLanguageModel(torch.nn.Module):
                 do_init=do_init,
             )
         )
+
+        log.info(f"frozen input embed: {self.model.get_input_embeddings().frozen_embedding}")
+        log.info(f"trainable input embed: {self.model.get_input_embeddings().trainable_embedding}")
+        log.info(f"full input embed size: {self.model.get_input_embeddings().num_embeddings}")
 
         self.vocab_size = self.model.get_input_embeddings().num_embeddings
         self.image_token_index = image_token_index

@@ -449,6 +449,7 @@ def run_training(config: ExperimentConfig):
             num_new_tokens=(
                 len(processor.special_tokens) if config.add_special_tokens else 0
             ),
+            tokenizer_size=processor.loaded_tokenizer_len,
             initializers=(
                 processor.special_tokens_initializer
                 if config.add_special_tokens
