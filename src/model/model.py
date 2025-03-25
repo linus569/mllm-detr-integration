@@ -54,13 +54,19 @@ class VisionLanguageModel(torch.nn.Module):
             param.requires_grad = True
 
         # Resize embeddings to correct start size if necessary
-        if self.model.get_input_embeddings().num_embeddings != tokenizer_size:
+        if tokenizer_size is None:
+            tokenizer_size = self.model.get_input_embeddings().num_embeddings
+            log.warning("Tokenizer size not provided. Using model vocab size.")
+        
+        embedding_size = self.model.get_input_embeddings().num_embeddings
+        if embedding_size != tokenizer_size:
             log.warning(
-                f"Tokenizer vocab size {tokenizer_size} does not match model vocab size {self.model.get_input_embeddings().num_embeddings}. Resizing embeddings..."
+                f"Tokenizer vocab size {tokenizer_size} does not match model vocab size {embedding_size}. "
+                "Resizing embeddings to match tokenizer size."
             )
             # Resize token embeddings
             self.model.resize_token_embeddings(tokenizer_size)
-            log.warning(f"Resized embedding size: {self.model.get_input_embeddings().num_embeddings}")
+            log.warning(f"Model embeddings resized to {self.model.get_input_embeddings().num_embeddings}")
 
         # Initialize new token embeddings
         self.model.set_input_embeddings(
@@ -83,6 +89,10 @@ class VisionLanguageModel(torch.nn.Module):
         log.info(f"frozen input embed: {self.model.get_input_embeddings().frozen_embedding}")
         log.info(f"trainable input embed: {self.model.get_input_embeddings().trainable_embedding}")
         log.info(f"full input embed size: {self.model.get_input_embeddings().num_embeddings}")
+
+        log.info(f"frozen output embed: {self.model.get_output_embeddings().frozen_lm_head}")
+        log.info(f"trainable output embed: {self.model.get_output_embeddings().trainable_lm_head}")
+        log.info(f"full output embed size: {self.model.get_output_embeddings().out_features}")
 
         self.vocab_size = self.model.get_input_embeddings().num_embeddings
         self.image_token_index = image_token_index
