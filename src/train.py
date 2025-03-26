@@ -54,7 +54,6 @@ class Trainer:
 
         self.checkpoint_dir = config.checkpoint_dir
         self.gradient_accumulation_steps = config.total_batch_size // config.batch_size
-        self.max_grad_norm = config.max_grad_norm
 
         # Initialize metric once
         self.metric = TrainMetrics(device)
@@ -225,10 +224,10 @@ class Trainer:
 
         if (step + 1) % self.gradient_accumulation_steps == 0:
             # unscale gradients
-            if self.max_grad_norm is not None:  # grad_clip_norm
+            if self.config.max_grad_norm is not None:  # grad_clip_norm
                 self.scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(), self.max_grad_norm
+                    self.model.parameters(), self.config.max_grad_norm
                 )
 
             self.scaler.step(self.optimizer)

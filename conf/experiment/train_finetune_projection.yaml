@@ -20,7 +20,7 @@ epochs: 2
 lr: 1e-3 #5e-5
 warmup_ratio: 0.05
 weight_decay: null # not used
-max_grad_norm: null
+max_grad_norm: 1.
 max_tokens: 3200
 pad_to_multiple_of: 128
 
