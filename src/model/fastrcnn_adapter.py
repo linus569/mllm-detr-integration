@@ -14,88 +14,209 @@ from torchvision.ops import MultiScaleRoIAlign
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 
-class LLaVAFeatureExtractor(nn.Module):
-    def __init__(self, llava_encoder, output_dim=256):
+class SigLipFeatureExtractor(nn.Module):
+    def __init__(
+        self, fpn_imitation=False, trainable_backbone=False
+    ):  # TODO: can be of any size!?
         super().__init__()
-        self.llava_encoder = llava_encoder
+        self.fpn_imitation = fpn_imitation
+
+        self.image_encoder = LlavaQwenForCausalLM.from_pretrained(
+            "lmms-lab/llava-onevision-qwen2-0.5b-si"
+        ).get_vision_tower()
+        # self.image_encoder.eval()
 
         # Ensure the encoder is frozen or trainable based on your needs
-        for param in self.llava_encoder.parameters():
-            param.requires_grad = False  # Set True if fine-tuning
+        for param in self.image_encoder.parameters():
+            param.requires_grad = trainable_backbone  # TODO: Set True if fine-tuning
 
-        with torch.no_grad():
-            # Test forward pass to get the output dimension
-            test_input = torch.rand(1, 3, 384, 384)
-            test_output = self.llava_encoder(test_input)
-            hidden_dim = test_output.shape[-1]
+        hidden_dim = self.image_encoder.config.hidden_size
+        self.out_channels = 256
+        self.input_size = 384
+
         # Projection layer to reshape embeddings into spatial feature maps
-        self.projection = nn.Conv2d(
-            in_channels=hidden_dim, out_channels=output_dim, kernel_size=1
+        # self.feature_projection = nn.Conv2d(
+        #     in_channels=hidden_dim, out_channels=output_dim, kernel_size=1
+        # )
+        self.feature_projection = nn.Sequential(
+            nn.Conv2d(hidden_dim, self.out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(self.out_channels),
+            nn.ReLU(inplace=True),
         )
-        self.out_channels = output_dim
 
-    def forward(self, images):
+        # Get vision transformer layers for access to intermediate features
+        # print(self.image_encoder)
+        self.transformer_layers = (
+            self.image_encoder.vision_tower.vision_model.encoder.layers
+        )
+        self.num_transformer_layers = len(self.transformer_layers)
+
+        # Extract features from different layers of the transformer
+        # We'll use the last 4 layers for the FPN
+        self.layer_indices = [
+            self.num_transformer_layers - 4,
+            self.num_transformer_layers - 3,
+            self.num_transformer_layers - 2,
+            self.num_transformer_layers - 1,
+        ]
+
+        # Project features from different layers to a common dimension
+        self.projections = nn.ModuleList(
+            [nn.Conv2d(hidden_dim, self.out_channels, kernel_size=1) for _ in range(4)]
+        )
+
+        # FPN lateral connections (from top-down)
+        self.fpn_laterals = nn.ModuleList(
+            [
+                nn.Conv2d(self.out_channels, self.out_channels, kernel_size=1)
+                for _ in range(3)
+            ]
+        )
+
+        # FPN predictors
+        self.fpn_outputs = nn.ModuleList(
+            [
+                nn.Conv2d(
+                    self.out_channels, self.out_channels, kernel_size=3, padding=1
+                )
+                for _ in range(4)
+            ]
+        )
+
+    def _extract_layer_features(self, x, layer_idx):
+        # Extract features from a specific transformer layer
+        hidden_states = x
+
+        # Process embeddings
+        if layer_idx == -1:
+            return hidden_states
+
+        # Create attention mask in the correct format for SigLip
+        # SigLip expects a 4D attention mask: (batch_size, num_heads, seq_len, seq_len)
+        batch_size, seq_len = hidden_states.shape[:2]
+        # Create a square mask where all positions can attend to all others
+        attention_mask = torch.ones(
+            (batch_size, 1, seq_len, seq_len), device=hidden_states.device
+        )
+
+        # Process through transformer layers up to the specified index
+        for i, layer_module in enumerate(self.transformer_layers):
+            hidden_states = layer_module(hidden_states, attention_mask=attention_mask)[
+                0
+            ]
+            if i == layer_idx:
+                return hidden_states
+
+        return hidden_states
+
+    def _reshape_features(self, features):
+        # Remove class token and reshape to 2D feature map
+        b, n, c = features.shape
+        h = w = int(n**0.5)  # Assumes square input
+        return features.permute(0, 2, 1).reshape(b, c, h, w)
+
+    def forward(self, x):
         """
-        Extract features from LLaVA and reshape for Faster R-CNN.
-        :param images: Tensor of shape (batch, C, H, W)
-        :return: Dictionary of feature maps suitable for Faster R-CNN
+        #     Extract features from LLaVA and reshape for Faster R-CNN.
+        #     :param images: Tensor of shape (batch, C, H, W)
+        #     :return: Dictionary of feature maps suitable for Faster R-CNN
         """
-        # transform image to 384x384
-        images = nn.functional.interpolate(
-            images, size=(384, 384), mode="bilinear", align_corners=False
-        )
+        if self.fpn_imitation:
+            # Get batch size and channels
+            batch_size = x.shape[0]
 
-        with torch.no_grad():
-            features = self.llava_encoder(images)  # Shape: (batch, seq_len, hidden_dim)
+            # Resize if needed
+            if x.shape[-2:] != (384, self.input_size):
+                x = torch.nn.functional.interpolate(
+                    x,
+                    size=(self.input_size, self.input_size),
+                    mode="bilinear",
+                    align_corners=False,
+                )
 
-        # LLaVA outputs a sequence (batch, seq_len, dim), reshape to (batch, channels, height, width)
-        batch_size, seq_len, dim = features.shape
-        spatial_size = int(seq_len**0.5)  # Assuming square patch embedding
-        features = features.permute(0, 2, 1).view(
-            batch_size, dim, spatial_size, spatial_size
-        )
+            # SigLIP expects normalized inputs
+            if x.min() >= 0 and x.max() <= 1:
+                x = (x - 0.5) * 2.0
 
-        # Reduce dimensionality and adapt for Faster R-CNN
-        features = self.projection(features)
+            # Get embeddings
+            embeddings = self.image_encoder.vision_tower.vision_model.embeddings(x)
 
-        # Return as OrderedDict with named features as expected by FasterRCNN
-        return OrderedDict([("0", features)])
+            # Extract features from different transformer layers
+            multi_scale_features = []
+            for i, layer_idx in enumerate(self.layer_indices):
+                # Get features from this layer
+                layer_features = self._extract_layer_features(embeddings, layer_idx)
+                # Reshape to 2D feature map
+                spatial_features = self._reshape_features(layer_features)
+                # print(layer_features.shape)
+                # print(spatial_features.shape)
+                # Project to common dimension
+                projected_features = self.projections[i](spatial_features)
+                # Add to list
+                multi_scale_features.append(projected_features)
+
+            # Apply FPN (top-down pathway with lateral connections)
+            fpn_features = {}
+            last_feature = multi_scale_features[-1]
+            fpn_features["3"] = self.fpn_outputs[3](last_feature)
+
+            # Top-down pathway
+            for i in range(2, -1, -1):
+                higher_resolution_feature = multi_scale_features[i]
+                lateral_connection = self.fpn_laterals[i](higher_resolution_feature)
+
+                # Upsample and add
+                upsampled = torch.nn.functional.interpolate(
+                    last_feature, size=lateral_connection.shape[-2:], mode="nearest"
+                )
+                last_feature = lateral_connection + upsampled
+                fpn_features[str(i)] = self.fpn_outputs[i](last_feature)
+
+            return fpn_features
+        else:
+            # Extract features using SigLip image_encoder
+            features = self.image_encoder(x)  # Shape: (batch, seq_len, hidden_dim)
+
+            # LLaVA outputs a sequence (batch, seq_len, dim), reshape to (batch, channels, height, width)
+            batch_size, seq_len, dim = features.shape
+            spatial_size = int(seq_len**0.5)  # Assuming square patch embedding
+            features = features.permute(0, 2, 1).reshape(
+                batch_size, dim, spatial_size, spatial_size
+            )
+
+            # Reduce dimensionality and adapt for Faster R-CNN
+            features = self.feature_projection(features)
+
+            # Return as OrderedDict with named features as expected by FasterRCNN
+            return OrderedDict([("0", features)])
+
+    # def forward(self, images):
+    #
 
 
-image_encoder = LlavaQwenForCausalLM.from_pretrained(
-    "lmms-lab/llava-onevision-qwen2-0.5b-si"
-).get_vision_tower()
-image_encoder.eval()
+def create_siglip_fasterrcnn(num_classes, trainable_backbone=False):
+    backbone = SigLipFeatureExtractor()
 
+    anchor_generator = AnchorGenerator(
+        sizes=((32,), (64,), (128,), (256,)), aspect_ratios=((0.5, 1.0, 2.0),) * 4
+    )
 
-# Wrap it as a backbone for Faster R-CNN
-class FasterRCNNWithLLaVA(nn.Module):
-    def __init__(self, num_classes):
-        super().__init__()
+    # Create ROI pooler
+    roi_pooler = MultiScaleRoIAlign(
+        featmap_names=["0", "1", "2", "3"],
+        output_size=7,
+        sampling_ratio=2,  # Only one feature level
+    )
 
-        # Custom backbone using LLaVA
-        self.backbone = LLaVAFeatureExtractor(image_encoder)
+    model = FasterRCNN(
+        min_size=384,
+        backbone=backbone,
+        num_classes=num_classes,
+        rpn_anchor_generator=anchor_generator,
+        box_roi_pool=roi_pooler,
+    )
 
-        # Set up anchor generator params
-        anchor_sizes = ((32, 64, 128, 256, 512),)
-        aspect_ratios = ((0.5, 1.0, 2.0),)
-
-        # Define Faster R-CNN model with custom backbone
-        self.model = FasterRCNN(
-            backbone=self.backbone,
-            num_classes=num_classes,
-            rpn_anchor_generator=AnchorGenerator(
-                sizes=anchor_sizes, aspect_ratios=aspect_ratios
-            ),
-            box_roi_pool=MultiScaleRoIAlign(
-                featmap_names=["0"],  # Should match keys returned by backbone
-                output_size=7,
-                sampling_ratio=2,
-            ),
-        )
-
-    def forward(self, images, targets=None):
-        return self.model(images, targets)
+    return model
 
 
 class FastRCNNAdapter(torch.nn.Module):
@@ -104,12 +225,20 @@ class FastRCNNAdapter(torch.nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        # self.fastrcnn = (
-        #     fasterrcnn_resnet50_fpn()
-        # )  # weights=FasterRCNN_ResNet50_FPN_Weights.DEFAULT)
 
-        self.fastrcnn = FasterRCNNWithLLaVA(num_classes=91)
-        print(self.fastrcnn)
+        if "resnet" in config.model_name:
+            self.fastrcnn = (
+                fasterrcnn_resnet50_fpn()
+            )  # weights=FasterRCNN_ResNet50_FPN_Weights.DEFAULT)
+            # print(self.fastrcnn_resnet)
+        elif "siglip" in config.model_name:
+            self.fastrcnn = create_siglip_fasterrcnn(num_classes=91)
+            # print(self.fastrcnn)
+        else:
+            raise ValueError(
+                f"Model {config.model_name} not supported. Please use resnet or siglip."
+            )
+
         self.device = torch.device(config.device)
         self.fastrcnn.to(self.device)
 

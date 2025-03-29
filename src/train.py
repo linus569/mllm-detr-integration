@@ -122,7 +122,7 @@ class Trainer:
                 images = batch["images"].to(self.device)
                 labels = batch["labels"].to(self.device)
 
-                if self.config.model_name == "fasterrcnn":
+                if "fasterrcnn" in self.config.model_name:
                     labels = self.processor.postprocess_target_batch(
                         batch=batch, device=self.device
                     )
@@ -435,7 +435,7 @@ def run_training(config: ExperimentConfig):
     device = torch.device("cuda" if torch.cuda.is_available() else config.device)
     log.info(f"Using device: {device}")
 
-    if config.model_name == "fasterrcnn":
+    if "fasterrcnn" in config.model_name:
         processor = FastRCNNProcessor.from_config(config)
         model = FastRCNNAdapter(config)
     else:
