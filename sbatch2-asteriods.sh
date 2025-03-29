@@ -13,14 +13,14 @@ cat > "$TMP_SCRIPT" << EOL
 #SBATCH --error=logs/sbatch_${JOB_NAME}_%j.err
 #SBATCH --mail-user=linus.salzmann@tum.de
 #SBATCH --mail-type=ALL
-#SBATCH --partition=universe
+#SBATCH --partition=asteroids
 #SBATCH --qos=master-queuesave
 #SBATCH --time=0-24:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=48G
 
-# asteriods,universe
+# asteroids,universe
 
 # Load python module
 ml python/anaconda3

@@ -1,4 +1,4 @@
-name: vlm-detection4
+name: vlm-detection
 channels:
   - pytorch
   - nvidia
