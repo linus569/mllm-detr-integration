@@ -16,7 +16,7 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 
 class SigLipFeatureExtractor(nn.Module):
     def __init__(
-        self, fpn_imitation=False, trainable_backbone=False
+        self, fpn_imitation, trainable_backbone=False
     ):  # TODO: can be of any size!?
         super().__init__()
         self.fpn_imitation = fpn_imitation
@@ -195,18 +195,34 @@ class SigLipFeatureExtractor(nn.Module):
 
 
 def create_siglip_fasterrcnn(num_classes, trainable_backbone=False):
-    backbone = SigLipFeatureExtractor()
+    fpn_imitation = True
+    backbone = SigLipFeatureExtractor(fpn_imitation=fpn_imitation)
 
-    anchor_generator = AnchorGenerator(
-        sizes=((32,), (64,), (128,), (256,)), aspect_ratios=((0.5, 1.0, 2.0),) * 4
-    )
+    if fpn_imitation:
 
-    # Create ROI pooler
-    roi_pooler = MultiScaleRoIAlign(
-        featmap_names=["0", "1", "2", "3"],
-        output_size=7,
-        sampling_ratio=2,  # Only one feature level
-    )
+        anchor_generator = AnchorGenerator(
+            sizes=((32,), (64,), (128,), (256,)), aspect_ratios=((0.5, 1.0, 2.0),) * 4
+        )
+
+        # Create ROI pooler
+        roi_pooler = MultiScaleRoIAlign(
+            featmap_names=["0", "1", "2", "3"],
+            output_size=7,
+            sampling_ratio=2,  # Only one feature level
+        )
+    else:
+        # For single feature map: all anchor sizes on one level
+        anchor_generator = AnchorGenerator(
+            sizes=((32, 64, 128, 256),),  # All sizes in single tuple
+            aspect_ratios=((0.5, 1.0, 2.0),)  # One tuple for single feature map
+        )
+        
+        roi_pooler = MultiScaleRoIAlign(
+            featmap_names=["0"],  # Only one feature map
+            output_size=7,
+            sampling_ratio=2
+        )
+
 
     model = FasterRCNN(
         min_size=384,
