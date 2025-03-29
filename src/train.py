@@ -282,7 +282,7 @@ class Trainer:
                     top_k=50,
                 )
 
-            if self.config.model_name == "fasterrcnn":
+            if "fasterrcnn" in self.config.model_name:
                 predicted_boxes = outputs
                 generated_text = None
             else:
