@@ -106,11 +106,8 @@ class Processor(ProcessorMixin):
     @property
     def special_tokens_initializer(self) -> List[List[int]]:
         """Initializers for special tokens."""
-        # TODO: definit initialization scheme for special tokens
-        num_bins = self.config.num_coordinate_bins
         tok = AutoTokenizer.from_pretrained(self.config.model_name)
-        initializers = get_token_initializers(tok, self.special_tokens, num_bins)
-        # empty list for random initialization
+        initializers = get_token_initializers(tok, self.special_tokens)
         return [initializers.get(token, []) for token in self.special_tokens]
 
     @cached_property
