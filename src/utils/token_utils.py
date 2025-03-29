@@ -1,14 +1,14 @@
 from typing import Dict, List
 
 tokens_dict = {
-    "<annotation>": "begin annotation",
-    "</annotation>": "end annotation",
     "<object>": "begin object",
     "</object>": "end object",
     "<bbox>": "begin bbox",
     "</bbox>": "end bbox",
     "<class>": "begin class",
     "</class>": "end class",
+    "<annotation>": "begin annotation",
+    "</annotation>": "end annotation",
 }
 
 

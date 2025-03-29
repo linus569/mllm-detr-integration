@@ -1,10 +1,9 @@
-from functools import cached_property
-import json
 import logging
 import random
-import re
+from functools import cached_property
 from typing import Any, Dict, List, Optional
 
+import numpy as np
 import torch
 from torch.utils.data import DataLoader, Subset
 from transformers import StoppingCriteria
@@ -22,7 +21,7 @@ def collate_fn(train, processor):
         Collate function to be used with PyTorch DataLoader.
 
         Args:
-            samples: List of batch dictionaries
+            batch: List of batch dictionaries
 
         Returns:
             Processed batch dictionary
@@ -46,7 +45,7 @@ def build_dataloader(
     num_workers: int = 0,
     load_precomputed_embeddings: bool = False,
     subset_size: Optional[int] = None,
-    use_random_subset: int = True,
+    use_random_subset: bool = True,
 ) -> DataLoader:
     """Builds a PyTorch DataLoader for a given dataset."""
 
@@ -79,13 +78,15 @@ def build_dataloader(
     )
 
 
-def build_train_dataloader(config: ExperimentConfig, processor: Processor, subset_size=None):
+def build_train_dataloader(
+    config: ExperimentConfig, processor: Processor, subset_size=None
+):
     return build_dataloader(
         processor=processor,
         dataset_config=config.train_dataset,
         is_train=True,
         batch_size=config.batch_size,
-        num_workers=config.num_workers, 
+        num_workers=config.num_workers,
         load_precomputed_embeddings=False,
         subset_size=subset_size,
         use_random_subset=True,
@@ -93,30 +94,35 @@ def build_train_dataloader(config: ExperimentConfig, processor: Processor, subse
 
 
 def build_val_dataloader(
-    config: ExperimentConfig, processor: Processor, subset_size=None, use_random_subset=True
+    config: ExperimentConfig,
+    processor: Processor,
+    subset_size=None,
+    use_random_subset=True,
 ):
     return build_dataloader(
         processor=processor,
         dataset_config=config.val_dataset,
         is_train=False,
         batch_size=config.batch_size,
-        num_workers=config.num_workers, 
+        num_workers=config.num_workers,
         load_precomputed_embeddings=False,
         subset_size=subset_size,
         use_random_subset=use_random_subset,
     )
-    
 
 
 def build_test_dataloader(
-    config: ExperimentConfig, processor: Processor, subset_size=None, use_random_subset=True
+    config: ExperimentConfig,
+    processor: Processor,
+    subset_size=None,
+    use_random_subset=True,
 ):
     return build_dataloader(
         processor=processor,
-        dataset_config=config.train_dataset,
+        dataset_config=config.test_dataset,
         is_train=False,
         batch_size=config.batch_size,
-        num_workers=config.num_workers, 
+        num_workers=config.num_workers,
         load_precomputed_embeddings=False,
         subset_size=subset_size,
         use_random_subset=use_random_subset,
@@ -124,30 +130,45 @@ def build_test_dataloader(
 
 
 def seed_everything(seed):
-    pass
+    """
+    Set the seed for all random number generators to ensure reproducibility.
 
+    Args:
+        seed (int): The seed value to set.
+    """
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    np.random.seed(seed)
 
-def save_training_checkpoint(todo):
-    pass
+    # Set deterministic behavior for CUDA if available
+    if torch.cuda.is_available():
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
 
 class JSONStoppingCriteria(StoppingCriteria):
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
-    
+
     @cached_property
     def end_sequence(self):
-        return self.tokenizer.encode(
-            "<|im_end|>"  # "]}]<|im_end|>"
-        )  # Get token ID for closing bracket
-    
+        # Get token ID for closing bracket
+        return self.tokenizer.encode("<|im_end|>")  # "]}]<|im_end|>"
+
     @cached_property
     def length(self):
         return len(self.end_sequence)
 
     def __call__(self, input_ids, scores, **kwargs):
-        # Stop if we find the end sequence
-        # print(input_ids[0][-self.length :])
-        # print(self.end_sequence)
-        return input_ids[0][-self.length :] == self.end_sequence
-        # return input_ids[0][-1] == self.end_sequence
+        # return input_ids[0][-self.length :] == self.end_sequence
+        should_stop = torch.ones(input_ids.shape[0], dtype=torch.bool)
+
+        for i in range(input_ids.shape[0]):
+            # Stop if we find the end sequence
+            if input_ids[i][-self.length :].tolist() != self.end_sequence:
+                should_stop[i] = False
+
+        return should_stop.all()
