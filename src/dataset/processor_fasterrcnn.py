@@ -28,15 +28,15 @@ class FastRCNNProcessor(ProcessorMixin):
         """
         self.config = config
         self.image_size = self.config.image_size
-        self.tokenizer = None # placeholder, otherwise it will throw an error
+        self.tokenizer = None  # placeholder, otherwise it will throw an error
 
         # TODO: define transformes in config
         self.bbox_transform = A.Compose(
             [
-                A.Resize(self.image_size[0], self.image_size[1]),
-                A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
-                # A.HorizontalFlip(p=0.5),
-                # A.RandomBrightnessContrast(p=0.2),
+                A.ToFloat(max_value=255.0),
+                # norm and resizing is done in the model
+                # A.LongestMaxSize(max_size=800),
+                # A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225), max_pixel_value=255.0), #mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)
                 ToTensorV2(),
             ],
             bbox_params=A.BboxParams(
@@ -130,8 +130,8 @@ class FastRCNNProcessor(ProcessorMixin):
             ]
             transformed_bboxes[i] = torch.tensor(norm_bboxes, dtype=torch.float32)
 
-        images = torch.stack(transformed_images)
-
+        # images = torch.stack(transformed_images)
+        images = transformed_images
         return {
             "input_ids": torch.zeros((batch_size, 1), dtype=torch.int64),
             "attention_mask": torch.zeros((batch_size, 1), dtype=torch.int64),
@@ -155,8 +155,7 @@ class FastRCNNProcessor(ProcessorMixin):
         Unnormalize bounding boxes from [0,1] to pixel coordinates efficiently.
         Args:
             bbox: Tensor of shape (N, 4) or (4,) with normalized coordinates
-            width: Original image width
-            height: Original image height
+            size: Tuple of image dimensions (height, width)
         Returns:
             Tensor of same shape with pixel coordinates
         """
@@ -182,12 +181,10 @@ class FastRCNNProcessor(ProcessorMixin):
 
         return [
             {
-                "boxes": self._unnormalize_bbox(
-                    boxes.to(device), size=self.config.image_size
-                ),
+                "boxes": self._unnormalize_bbox(boxes.to(device), size=img.shape[-2:]),
                 "labels": labels.to(device),
             }
-            for boxes, labels in zip(
-                batch["instance_bboxes"], batch["instance_classes_id"]
+            for boxes, labels, img in zip(
+                batch["instance_bboxes"], batch["instance_classes_id"], batch["images"]
             )
         ]

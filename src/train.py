@@ -12,7 +12,6 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import hydra
 import numpy as np
 import torch
-import wandb
 from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig, OmegaConf
 from torch import autocast
@@ -21,6 +20,7 @@ from torch.optim import AdamW
 from tqdm import tqdm
 from transformers import get_scheduler
 
+import wandb
 from model.model import VisionLanguageModel
 from utils.config import DatasetConfig
 from utils.train_metrics import TrainMetrics
@@ -149,7 +149,6 @@ class Trainer:
                         step=step,
                     )
 
-                    
                     if outputs.logits is not None:
                         # get masked logits
                         mask = batch["labels"] != -100
@@ -274,7 +273,8 @@ class Trainer:
                 outputs = self.model.generate(
                     input_ids=batch["input_ids"].to(self.device),
                     attention_mask=batch["attention_mask"].to(self.device),
-                    image=batch["images"].to(self.device),
+                    # not .to(device) as fasterrcnn returns list, done in model
+                    image=batch["images"],
                     stopping_criteria=[JSONStoppingCriteria(self.processor.tokenizer)],
                     do_sample=True,  # TODO: hardcoded to config
                     temperature=self.config.temperature,

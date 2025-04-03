@@ -16,7 +16,7 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 
 class SigLipFeatureExtractor(nn.Module):
     def __init__(
-        self, fpn_imitation, trainable_backbone=False
+        self, fpn_imitation, out_channels, trainable_backbone=False
     ):  # TODO: can be of any size!?
         super().__init__()
         self.fpn_imitation = fpn_imitation
@@ -31,7 +31,7 @@ class SigLipFeatureExtractor(nn.Module):
             param.requires_grad = trainable_backbone  # TODO: Set True if fine-tuning
 
         hidden_dim = self.image_encoder.config.hidden_size
-        self.out_channels = 256
+        self.out_channels = out_channels
         self.input_size = 384
 
         # Projection layer to reshape embeddings into spatial feature maps
@@ -196,7 +196,10 @@ class SigLipFeatureExtractor(nn.Module):
 
 def create_siglip_fasterrcnn(num_classes, trainable_backbone=False):
     fpn_imitation = True
-    backbone = SigLipFeatureExtractor(fpn_imitation=fpn_imitation)
+    out_channels = 512
+    backbone = SigLipFeatureExtractor(
+        fpn_imitation=fpn_imitation, out_channels=out_channels
+    )
 
     if fpn_imitation:
 
@@ -214,15 +217,12 @@ def create_siglip_fasterrcnn(num_classes, trainable_backbone=False):
         # For single feature map: all anchor sizes on one level
         anchor_generator = AnchorGenerator(
             sizes=((32, 64, 128, 256),),  # All sizes in single tuple
-            aspect_ratios=((0.5, 1.0, 2.0),)  # One tuple for single feature map
-        )
-        
-        roi_pooler = MultiScaleRoIAlign(
-            featmap_names=["0"],  # Only one feature map
-            output_size=7,
-            sampling_ratio=2
+            aspect_ratios=((0.5, 1.0, 2.0),),  # One tuple for single feature map
         )
 
+        roi_pooler = MultiScaleRoIAlign(
+            featmap_names=["0"], output_size=7, sampling_ratio=2  # Only one feature map
+        )
 
     model = FasterRCNN(
         min_size=384,
@@ -243,9 +243,10 @@ class FastRCNNAdapter(torch.nn.Module):
         self.config = config
 
         if "resnet" in config.model_name:
-            self.fastrcnn = (
-                fasterrcnn_resnet50_fpn()
-            )  # weights=FasterRCNN_ResNet50_FPN_Weights.DEFAULT)
+            self.fastrcnn = fasterrcnn_resnet50_fpn(
+                weights=FasterRCNN_ResNet50_FPN_Weights.DEFAULT
+            )
+            # weights=FasterRCNN_ResNet50_FPN_Weights.DEFAULT)
             # print(self.fastrcnn_resnet)
         elif "siglip" in config.model_name:
             self.fastrcnn = create_siglip_fasterrcnn(num_classes=91)
@@ -260,7 +261,12 @@ class FastRCNNAdapter(torch.nn.Module):
 
     def forward(self, input_ids=None, images=None, attention_mask=None, labels=None):
         self.fastrcnn.train()
-        images = images.to(self.device)
+        if isinstance(images, list):
+            images = [img.to(self.device) for img in images]
+        elif isinstance(images, torch.Tensor):
+            images = [images.to(self.device)]
+        else:
+            raise ValueError("Images should be a list of tensors or single tensor.")
 
         if labels is not None:
             targets = labels
@@ -275,13 +281,13 @@ class FastRCNNAdapter(torch.nn.Module):
         if image is None:
             raise ValueError("Image is required for generation.")
 
-        # Ensure image is a list if it's just a single tensor
-        if isinstance(image, torch.Tensor) and image.dim() == 4:
-            # If it's a batch of images, make sure it's on the right device
-            image = image.to(self.device)
-        elif isinstance(image, torch.Tensor) and image.dim() == 3:
-            # If it's a single image (C,H,W), add batch dimension and move to device
-            image = image.unsqueeze(0).to(self.device)
+        # image is list of tensors
+        if isinstance(image, list):
+            image = [img.to(self.device) for img in image]
+        elif isinstance(image, torch.Tensor):
+            image = [image.to(self.device)]
+        else:
+            raise ValueError("Image should be a list of tensors or single tensor.")
 
         predictions = self.fastrcnn(image)
         return predictions
