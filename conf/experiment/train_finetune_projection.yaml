@@ -10,13 +10,13 @@ main_dir: "/u/home/salzmann/Documents/dev/master-thesis/"
 model_name: 'lmms-lab/llava-onevision-qwen2-0.5b-si'
 checkpoint_dir: '/u/home/salzmann/Documents/dev/master-thesis/checkpoints'
 
-batch_size: 2
+batch_size: 4
 total_batch_size: 128 # tbs/bs = grad acum steps
 num_samples: null # use full dataset
 val_num_samples: 100
 val_freq: 20000
 print_freq: 50
-epochs: 2
+epochs: 5
 lr: 1e-3 #5e-5
 warmup_ratio: 0.05
 weight_decay: null # not used
@@ -26,6 +26,6 @@ pad_to_multiple_of: 128
 
 temperature: 0.6
 use_amp: true
-torch_dtype: null #float16 #bfloat16 error when using *16 because grad_scale works with *32
+torch_dtype: 'bfloat16' #none, float16 #bfloat16 error when using *16 because grad_scale works with *32
 
 num_coordinate_bins: 100 #one for every pixel

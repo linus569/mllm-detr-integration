@@ -55,7 +55,7 @@ class Processor(ProcessorMixin):
         # TODO: define transformes in config
         self.bbox_transform = A.Compose(
             [
-                A.Resize(self.image_size[0], self.image_size[1]),
+                A.Resize(self.image_size[0], self.image_size[1], interpolation=3),
                 A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
                 # A.HorizontalFlip(p=0.5),
                 # A.RandomBrightnessContrast(p=0.2),
