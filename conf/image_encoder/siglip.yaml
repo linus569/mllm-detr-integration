@@ -4,4 +4,4 @@ image_size: [384, 384]
 mean: [0.5, 0.5, 0.5] 
 std: [0.5, 0.5, 0.5]  
 num_image_tokens: 729  # 27x27 patches = 729
-interpolation: 3 # bicubic
+interpolation: 2 # bicubic
