@@ -3,6 +3,7 @@ from typing import List, Optional, Tuple, Union
 
 import torch
 from llava.model.language_model.llava_qwen import LlavaQwenForCausalLM
+from transformers import AutoModel
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from model.loss import masked_cross_entropy
@@ -10,6 +11,7 @@ from model.partial_frozen_embeddings import (
     PartiallyFrozenEmbedding,
     PartiallyFrozenLMHead,
 )
+from utils.config import ExperimentConfig
 
 log = logging.getLogger(__name__)
 
@@ -17,7 +19,7 @@ log = logging.getLogger(__name__)
 class VisionLanguageModel(torch.nn.Module):
     def __init__(
         self,
-        config,
+        config: ExperimentConfig,
         image_token_index: int,
         num_new_tokens: int = 0,
         tokenizer_size: int = None,
@@ -37,8 +39,32 @@ class VisionLanguageModel(torch.nn.Module):
         # device_map="auto", prints warning, could be ignored https://github.com/huggingface/transformers/issues/31544
         # torch_dtype=self.torch_dtype, attn_implementation=attn_implementation,
         self.model = LlavaQwenForCausalLM.from_pretrained(self.config.model_name)
-        self.image_encoder = self.model.get_vision_tower()
-        self.projector = self.model.get_model().mm_projector
+
+        if self.config.image_encoder.name == "dinov2":
+            log.info("Using DINOv2 image encoder")
+            self.image_encoder = AutoModel.from_pretrained("facebook/dinov2-small")
+            llm_embed_dim = self.model.config.hidden_size
+            dinov2_embed_dim = self.image_encoder.config.hidden_size
+
+            self.projector = torch.nn.Sequential(
+                torch.nn.Linear(dinov2_embed_dim, llm_embed_dim),  # 4*llm_embed_dim),
+                torch.nn.GELU(),
+                torch.nn.Linear(llm_embed_dim, llm_embed_dim),
+            )
+
+            # Freeze all image encoder parameters
+            for param in self.image_encoder.parameters():
+                param.requires_grad = False
+
+            log.info(
+                f"Image encoder {self.config.image_encoder.name} initialized with output dim {dinov2_embed_dim} -> {llm_embed_dim}"
+            )
+        else:
+            log.info(
+                f"Using default image encoder from model: {self.config.image_encoder.name}"
+            )
+            self.image_encoder = self.model.get_vision_tower()
+            self.projector = self.model.get_model().mm_projector
 
         # freeze all parameters
         if config.freeze_model:
@@ -57,7 +83,7 @@ class VisionLanguageModel(torch.nn.Module):
         if tokenizer_size is None:
             tokenizer_size = self.model.get_input_embeddings().num_embeddings
             log.warning("Tokenizer size not provided. Using model vocab size.")
-        
+
         embedding_size = self.model.get_input_embeddings().num_embeddings
         if embedding_size != tokenizer_size:
             log.warning(
@@ -66,7 +92,9 @@ class VisionLanguageModel(torch.nn.Module):
             )
             # Resize token embeddings
             self.model.resize_token_embeddings(tokenizer_size)
-            log.warning(f"Model embeddings resized to {self.model.get_input_embeddings().num_embeddings}")
+            log.warning(
+                f"Model embeddings resized to {self.model.get_input_embeddings().num_embeddings}"
+            )
 
         # Initialize new token embeddings
         self.model.set_input_embeddings(
@@ -90,9 +118,15 @@ class VisionLanguageModel(torch.nn.Module):
         log.info(f"trainable input embed: {self.model.get_input_embeddings().trainable_embedding}")
         log.info(f"full input embed size: {self.model.get_input_embeddings().num_embeddings}")
 
-        log.info(f"frozen output embed: {self.model.get_output_embeddings().frozen_lm_head}")
-        log.info(f"trainable output embed: {self.model.get_output_embeddings().trainable_lm_head}")
-        log.info(f"full output embed size: {self.model.get_output_embeddings().out_features}")
+        log.info(
+            f"frozen output embed: {self.model.get_output_embeddings().frozen_lm_head}"
+        )
+        log.info(
+            f"trainable output embed: {self.model.get_output_embeddings().trainable_lm_head}"
+        )
+        log.info(
+            f"full output embed size: {self.model.get_output_embeddings().out_features}"
+        )
 
         self.vocab_size = self.model.get_input_embeddings().num_embeddings
         self.image_token_index = image_token_index
@@ -101,6 +135,7 @@ class VisionLanguageModel(torch.nn.Module):
 
     def state_dict(self, destination=None, prefix="", keep_vars=False):
         log.info("Reading state dict")
+
         projector_state_dict = self.projector.state_dict(
             destination=destination, prefix=prefix + "projector.", keep_vars=keep_vars
         )
@@ -160,6 +195,7 @@ class VisionLanguageModel(torch.nn.Module):
         return missing, unexpected
 
     def tie_weights(self):
+        # TODO: is never called, should be called in __init__ if tie_word_embeddings is True
         # TODO: if self.language_config.tie_word_embeddings:
         output_embeddings: PartiallyFrozenLMHead = self.model.get_output_embeddings()
         input_embeddings: PartiallyFrozenEmbedding = self.model.get_input_embeddings()
@@ -172,16 +208,51 @@ class VisionLanguageModel(torch.nn.Module):
         )
 
     def _get_image_features(self, pixel_values: torch.FloatTensor) -> torch.FloatTensor:
+        assert pixel_values.dim() in (
+            4,
+            5,
+        ), "Image should be of shape [batch_size, channels, height, width] or [batch_size, num_patches, channels, height, width]"
+
         # Image feature extraction
+        pixel_values = pixel_values.to(self.config.device)
+        encoder_name = self.config.image_encoder.name
+
         if pixel_values.ndim == 5:  # If patches are used
             image_features = []
             for img in pixel_values:
-                image_features.append(self.image_encoder(img))
+                # # Ensure correct channel order for each patch
+                # if img.shape[-1] == 3:  # If channels are last
+                #     img = img.permute(0, 3, 1, 2)
+                # image_features.append(self.image_encoder(img))
+                if encoder_name == "dinov2":
+                    outputs = self.image_encoder(img)
+                    if self.config.image_encoder.use_pooler_output:
+                        # Extract the [CLS] token representation (first token)
+                        img_features = outputs.pooler_output.unsqueeze(1)
+                    else:
+                        img_features = outputs.last_hidden_state
+                else:
+                    # use siglip, already in correct format
+                    img_features = self.image_encoder(img)
+                image_features.append(img_features)
             # convert list to tensor
             image_features = torch.stack(image_features)
         else:
-            image_features = self.image_encoder(pixel_values)
-        # TODO: check in detail again if image_features are coorect or if I need to do something with them
+            # # Ensure image is in correct format [batch_size, channels, height, width]
+            # if pixel_values.shape[-1] == 3:  # If channels are last
+            #     pixel_values = pixel_values.permute(0, 3, 1, 2)
+            # image_features = self.image_encoder(pixel_values)
+            if encoder_name == "dinov2":
+                outputs = self.image_encoder(pixel_values)
+                if self.config.image_encoder.use_pooler_output:
+                    # Extract the [CLS] token representation (first token)
+                    image_features = outputs.pooler_output.unsqueeze(1)
+                else:
+                    image_features = outputs.last_hidden_state
+            else:
+                # use siglip, already in correct format
+                image_features = self.image_encoder(pixel_values)
+
         image_features = image_features.to(self.model.device, self.model.dtype)
 
         # Project image features to token size
@@ -280,27 +351,13 @@ class VisionLanguageModel(torch.nn.Module):
         stopping_criteria=None,
         **kwargs,
     ):
-        assert image.dim() in (
-            4,
-            5,
-        ), "Image should be of shape [batch_size, channels, height, width] or [batch_size, num_patches, channels, height, width]"
-        # assert image.dtype == torch.float32, "Image should be of type float32" # FIXME: not true, can be bfloat16
+        if image is None:
+            raise ValueError("Image needs to be provided for generation.")
 
         # Image feature extraction
-        if image.dim() == 5:  # Image with patches
-            image_features = []
-            for img in image:
-                # Ensure correct channel order for each patch
-                if img.shape[-1] == 3:  # If channels are last
-                    img = img.permute(0, 3, 1, 2)
-                image_features.append(self.image_encoder(img))
-            image_features = torch.stack(image_features)
-        else:  # Handle regular images
-            # Ensure image is in correct format [batch_size, channels, height, width]
-            if image.shape[-1] == 3:  # If channels are last
-                image = image.permute(0, 3, 1, 2)
-            image_features = self.image_encoder(image)
+        image_features = self._get_image_features(image)
 
+        # Project image features to token size
         image_features = self.projector(image_features)
 
         # Token embeddings

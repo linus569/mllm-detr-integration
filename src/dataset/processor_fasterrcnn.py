@@ -21,13 +21,10 @@ class FastRCNNProcessor(ProcessorMixin):
         Initialize the processor with a tokenizer.
 
         Args:
-            image_size: Tuple of image dimensions (height, width)
-            num_img_tokens: Number of image tokens to include
-            train: Whether the processor is used in training
-
+            config: Configuration object containing parameters for the processor.
         """
         self.config = config
-        self.image_size = self.config.image_size
+        self.image_size = self.config.image_encoder.image_size
         self.tokenizer = None  # placeholder, otherwise it will throw an error
 
         # TODO: define transformes in config

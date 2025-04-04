@@ -13,9 +13,7 @@ train: true
 evaluate: true
 eval_mode: val
 
-image_size: [384, 384]
-num_image_tokens: 729
-image_token: <image>
+image_token: <image> 
 
 
 hydra:

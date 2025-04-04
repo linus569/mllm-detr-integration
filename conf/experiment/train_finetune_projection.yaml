@@ -3,6 +3,7 @@ defaults:
   - /dataset@train_dataset: coco_train
   - /dataset@val_dataset: coco_val
   - /dataset@test_dataset: coco_test
+  - /image_encoder: siglip
 
 name: finetune_projection
 main_dir: "/u/home/salzmann/Documents/dev/master-thesis/"

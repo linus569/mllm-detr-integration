@@ -3,6 +3,7 @@ defaults:
   - /dataset@train_dataset: coco_train
   - /dataset@val_dataset: coco_val
   - /dataset@test_dataset: coco_test
+  - /image_encoder: siglip
 
 debug: true
 device: cpu #mps
@@ -24,7 +25,7 @@ epochs: 2
 lr: 1e-3
 warmup_ratio: 0.1
 weight_decay: null # not used
-max_grad_norm: null
+max_grad_norm: 1.0
 max_tokens: 3200 #null
 pad_to_multiple_of: 128
 
@@ -32,5 +33,5 @@ temperature: 0.3
 use_amp: false
 
 num_coordinate_bins: 100 # florence paper uses 1000
-#  image_size: Tuple[int, int] = (384, 384),
-#    num_image_tokens: int = 729,
+
+evaluate: false # overwrite value from train.yaml

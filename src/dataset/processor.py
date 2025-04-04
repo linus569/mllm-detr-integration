@@ -33,16 +33,22 @@ class Processor(ProcessorMixin):
         Initialize the processor with a tokenizer.
 
         Args:
-            image_size: Tuple of image dimensions (height, width)
-            num_img_tokens: Number of image tokens to include
-            train: Whether the processor is used in training
-
+            config: Configuration object containing parameters for the processor.
+            tokenizer: Pre-trained tokenizer for text processing.
         """
         self.config = config
 
-        self.image_size = self.config.image_size
+        self.image_size = self.config.image_encoder.image_size
+        self.mean = self.config.image_encoder.mean
+        self.std = self.config.image_encoder.std
+        self.interpolation = self.config.image_encoder.interpolation
+
         self.image_token = self.config.image_token
-        self.num_image_tokens = self.config.num_image_tokens
+        self.num_image_tokens = (
+            self.config.image_encoder.num_image_tokens
+            if not self.config.image_encoder.use_pooler_output
+            else 1
+        )
         self.max_length = self.config.max_tokens
         self.pad_to_multiple_of = self.config.pad_to_multiple_of
 
@@ -55,8 +61,12 @@ class Processor(ProcessorMixin):
         # TODO: define transformes in config
         self.bbox_transform = A.Compose(
             [
-                A.Resize(self.image_size[0], self.image_size[1], interpolation=3),
-                A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
+                A.Resize(
+                    self.image_size[0],
+                    self.image_size[1],
+                    interpolation=self.interpolation,
+                ),
+                A.Normalize(mean=self.mean, std=self.std),
                 # A.HorizontalFlip(p=0.5),
                 # A.RandomBrightnessContrast(p=0.2),
                 ToTensorV2(),
@@ -468,9 +478,7 @@ class Processor(ProcessorMixin):
 
         return [
             {
-                "boxes": self._unnormalize_bbox(
-                    boxes.to(device), size=self.config.image_size
-                ),
+                "boxes": self._unnormalize_bbox(boxes.to(device), size=self.image_size),
                 "labels": labels.to(device),
             }
             for boxes, labels in zip(
@@ -566,7 +574,7 @@ class Processor(ProcessorMixin):
             text_labels = text_labels[:valid_count]
             text_scores = text_scores[:valid_count]
 
-        text_bbox = self._unnormalize_bbox(text_bbox, size=self.config.image_size)
+        text_bbox = self._unnormalize_bbox(text_bbox, size=self.image_size)
 
         return {
             "boxes": text_bbox,
@@ -629,7 +637,7 @@ class Processor(ProcessorMixin):
                 text_bbox[i] = torch.tensor(bbox, dtype=torch.float32, device=device)
                 text_labels[i] = cat_name_to_id.get(class_name, -1)
 
-        text_bbox = self._unnormalize_bbox(text_bbox, size=self.config.image_size)
+        text_bbox = self._unnormalize_bbox(text_bbox, size=self.image_size)
 
         return {
             "boxes": text_bbox,

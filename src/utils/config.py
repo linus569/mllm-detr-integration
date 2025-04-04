@@ -18,6 +18,21 @@ class DatasetConfig:
 
 
 @dataclass
+class ImageEncoderConfig:
+    name: str = MISSING
+    model_path: Optional[str] = None
+
+    # Image processing parameters
+    image_size: Tuple[int, int] = MISSING
+    mean: List[float] = MISSING
+    std: List[float] = MISSING
+    interpolation: int = MISSING
+
+    num_image_tokens: int = MISSING
+    use_pooler_output: Optional[bool] = None
+
+
+@dataclass
 class ExperimentConfig:
     name: str = MISSING
     seed: int = MISSING
@@ -25,6 +40,8 @@ class ExperimentConfig:
     train_dataset: DatasetConfig = MISSING
     val_dataset: DatasetConfig = MISSING
     test_dataset: DatasetConfig = MISSING
+
+    image_encoder: ImageEncoderConfig = MISSING
 
     main_dir: str = MISSING
     model_name: str = "lmms-lab/llava-onevision-qwen2-0.5b-si"
@@ -73,8 +90,6 @@ class ExperimentConfig:
     use_amp: bool = MISSING  # use automatic mixed precision
     torch_dtype: Optional[str] = None
 
-    image_size: Tuple[int, int] = MISSING
-    num_image_tokens: int = MISSING
     image_token: str = MISSING
     num_coordinate_bins: int = MISSING
 
