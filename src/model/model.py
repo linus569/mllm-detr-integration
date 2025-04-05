@@ -357,9 +357,6 @@ class VisionLanguageModel(torch.nn.Module):
         # Image feature extraction
         image_features = self._get_image_features(image)
 
-        # Project image features to token size
-        image_features = self.projector(image_features)
-
         # Token embeddings
         embedding_layer = self.model.get_input_embeddings()
         inputs_embeds = embedding_layer(input_ids)
