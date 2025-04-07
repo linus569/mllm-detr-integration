@@ -3,7 +3,7 @@ from typing import List, Optional, Tuple, Union
 
 import torch
 from llava.model.language_model.llava_qwen import LlavaQwenForCausalLM
-from transformers import AutoModel
+from transformers import AutoModel, DetrForObjectDetection
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from model.loss import masked_cross_entropy
@@ -58,6 +58,27 @@ class VisionLanguageModel(torch.nn.Module):
 
             log.info(
                 f"Image encoder {self.config.image_encoder.name} initialized with output dim {dinov2_embed_dim} -> {llm_embed_dim}"
+            )
+        elif self.config.image_encoder.name == "resnet50":
+            log.info("Using ResNet50 image encoder")
+
+            model = DetrForObjectDetection.from_pretrained(
+                "facebook/detr-resnet-50", revision="no_timm"
+            )
+            self.image_encoder = model.model.backbone
+            llm_embed_dim = self.model.config.hidden_size
+
+            resnet_embed_dim = (
+                self.image_encoder.conv_encoder.intermediate_channel_sizes[-1]
+            )
+            self.projector = torch.nn.Sequential(
+                torch.nn.Linear(resnet_embed_dim, llm_embed_dim),
+                torch.nn.GELU(),
+                torch.nn.Linear(llm_embed_dim, llm_embed_dim),
+            )
+
+            log.info(
+                f"Image encoder {self.config.image_encoder.name} initialized with output dim"  # {self.config.image_encoder.output_dim}"
             )
         else:
             log.info(
@@ -249,6 +270,28 @@ class VisionLanguageModel(torch.nn.Module):
                     image_features = outputs.pooler_output.unsqueeze(1)
                 else:
                     image_features = outputs.last_hidden_state
+            elif encoder_name == "resnet50":
+                pixel_mask = torch.ones(
+                    pixel_values.shape[0],
+                    pixel_values.shape[2],
+                    pixel_values.shape[3],
+                    dtype=torch.bool,
+                )
+                pixel_mask = pixel_mask.to(pixel_values.device)
+                # pixel_values = pixel_values.flatten(0, 1)
+                features, object_queries_list = self.image_encoder(
+                    pixel_values, pixel_mask
+                )
+                # get final feature map and downsampled mask
+                feature_map, mask = features[-1]
+                if mask is None:
+                    raise ValueError("Backbone does not return downsampled pixel mask")
+
+                # Second, apply 1x1 convolution to reduce the channel dimension to d_model (256 by default)
+                # TODO: permutation correct?
+                image_features = feature_map.flatten(2).permute(0, 2, 1)
+                # print(image_features.shape)
+
             else:
                 # use siglip, already in correct format
                 image_features = self.image_encoder(pixel_values)
