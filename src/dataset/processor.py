@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import re
 from functools import cached_property
 from typing import Dict, List, Tuple, Union
@@ -20,7 +21,7 @@ from dataset.dataset import COCODataset
 from utils.config import ExperimentConfig
 from utils.token_utils import generate_coordinate_tokens, get_token_initializers
 
-logger = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
 
 
 class Processor(ProcessorMixin):
@@ -75,6 +76,20 @@ class Processor(ProcessorMixin):
                 format="pascal_voc", label_fields=["class_labels", "class_ids"]
             ),
         )
+
+        if config.image_encoder.name == "resnet50":
+            self.bbox_transform = A.Compose(
+                [
+                    A.LongestMaxSize(max_size=1333, interpolation=self.interpolation),
+                    A.SmallestMaxSize(max_size=800, interpolation=self.interpolation),
+                    # A.PadIfNeeded(min_height=800, min_width=800),
+                    A.Normalize(mean=self.mean, std=self.std),
+                    ToTensorV2(),
+                ],
+                bbox_params=A.BboxParams(
+                    format="pascal_voc", label_fields=["class_labels", "class_ids"]
+                ),
+            )
 
     @staticmethod
     def from_config(config: ExperimentConfig, add_special_tokens: bool = True):
@@ -371,16 +386,52 @@ class Processor(ProcessorMixin):
             ]
             transformed_bboxes[i] = torch.tensor(norm_bboxes, dtype=torch.float32)
 
-            text_inputs[i], bbox_str[i] = self.prepare_text_input(
-                self.num_image_tokens,
-                transformed["class_labels"],
-                norm_bboxes,
-                sample["captions"],
-                num_image_patches=0,
-                train=train,
+            if self.config.image_encoder.name != "resnet50":
+                # for resnet50 we need padded image size, so do it later
+                text_inputs[i], bbox_str[i] = self.prepare_text_input(
+                    self.num_image_tokens,
+                    transformed["class_labels"],
+                    norm_bboxes,
+                    sample["captions"],
+                    num_image_patches=0,
+                    train=train,
+                )
+
+        if self.config.image_encoder.name == "resnet50":
+            # variable sized images, pad images
+            # Find max dimensions in this batch
+            max_h = max(img.shape[1] for img in transformed_images)
+            max_w = max(img.shape[2] for img in transformed_images)
+
+            for i, sample in enumerate(batch):
+                text_inputs[i], bbox_str[i] = self.prepare_text_input(
+                    num_img_tokens = math.ceil(max_w / 32) * math.ceil(max_h / 32),
+                    instance_classes_str=transformed_classes[i],
+                    instance_bboxes=transformed_bboxes[i],
+                    captions=sample["captions"],
+                    num_image_patches=0,
+                    train=train,
+                )
+
+            #log.info(f"padded image_size: ({max_h}, {max_w})")
+
+            # Create a zero tensor of the max size
+            channels = transformed_images[0].shape[0]
+            images = torch.zeros(
+                batch_size, channels, max_h, max_w, dtype=transformed_images[0].dtype
             )
 
-        images = torch.stack(transformed_images)
+            # Copy each image into the padded tensor
+            for i, img in enumerate(transformed_images):
+                c, h, w = img.shape
+                images[i, :, :h, :w] = img
+
+            # Store the original image sizes for proper feature map calculation
+            image_sizes = [(img.shape[1], img.shape[2]) for img in transformed_images]
+        else:
+            # fixed_size images, stack tensors
+            images = torch.stack(transformed_images)
+            image_sizes = None
 
         if train:  # fast_att only allow left padding
             self.tokenizer.padding_side = "right"
@@ -435,6 +486,7 @@ class Processor(ProcessorMixin):
             "instance_bboxes": transformed_bboxes,
             "instance_classes_id": transformed_classes_id,
             "bbox_str": bbox_str,
+            "image_sizes": image_sizes,
         }
 
     ################
@@ -511,7 +563,7 @@ class Processor(ProcessorMixin):
                     )
                 )
             except Exception as e:
-                logger.warning(f"Error processing item {i} in batch: {e}")
+                log.warning(f"Error processing item {i} in batch: {e}")
                 failed += 1
                 results.append(
                     {
@@ -715,5 +767,5 @@ class Processor(ProcessorMixin):
             return valid_objects
 
         except json.JSONDecodeError as e:
-            logger.debug(f"Failed to parse model output text '{text}' with error {e}")
+            log.debug(f"Failed to parse model output text '{text}' with error {e}")
             return []

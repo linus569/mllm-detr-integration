@@ -78,7 +78,7 @@ class VisionLanguageModel(torch.nn.Module):
             )
 
             log.info(
-                f"Image encoder {self.config.image_encoder.name} initialized with output dim"  # {self.config.image_encoder.output_dim}"
+                f"Image encoder {self.config.image_encoder.name} initialized with output dim {resnet_embed_dim}"
             )
         else:
             log.info(
@@ -171,6 +171,18 @@ class VisionLanguageModel(torch.nn.Module):
             keep_vars=keep_vars,
         )
 
+        if not self.config.freeze_model:
+            # add model state dict to the output
+            model_state_dict = self.model.state_dict(
+                destination=destination, prefix=prefix, keep_vars=keep_vars
+            )
+            return {
+                **projector_state_dict,
+                **input_embeddings_state_dict,
+                **output_embeddings_state_dict,
+                **model_state_dict,
+            }
+
         return {
             **projector_state_dict,
             **input_embeddings_state_dict,
@@ -228,7 +240,9 @@ class VisionLanguageModel(torch.nn.Module):
             input_embeddings.trainable_embedding.weight
         )
 
-    def _get_image_features(self, pixel_values: torch.FloatTensor) -> torch.FloatTensor:
+    def _get_image_features(
+        self, pixel_values: torch.FloatTensor, image_sizes: List[Tuple[int, int]]
+    ) -> torch.FloatTensor:
         assert pixel_values.dim() in (
             4,
             5,
@@ -271,12 +285,17 @@ class VisionLanguageModel(torch.nn.Module):
                 else:
                     image_features = outputs.last_hidden_state
             elif encoder_name == "resnet50":
-                pixel_mask = torch.ones(
+                # use image_sizes to create pixel_mask
+                pixel_mask = torch.zeros(
                     pixel_values.shape[0],
                     pixel_values.shape[2],
                     pixel_values.shape[3],
                     dtype=torch.bool,
                 )
+                # TODO: is this needed?
+                for i, size in enumerate(image_sizes):
+                    pixel_mask[i, : size[0], : size[1]] = 1
+
                 pixel_mask = pixel_mask.to(pixel_values.device)
                 # pixel_values = pixel_values.flatten(0, 1)
                 features, object_queries_list = self.image_encoder(
@@ -332,7 +351,7 @@ class VisionLanguageModel(torch.nn.Module):
             inputs_embeds = self.model.get_input_embeddings()(input_ids)
 
         if images is not None:
-            image_features = self._get_image_features(images)
+            image_features = self._get_image_features(images, image_sizes)
             # Integrate image features into token embeddings
             n_image_tokens = (input_ids == self.image_token_index).sum()
             n_image_features = image_features.shape[0] * image_features.shape[1]

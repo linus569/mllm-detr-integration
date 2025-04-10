@@ -121,6 +121,7 @@ class Trainer:
                 attention_mask = batch["attention_mask"].to(self.device)
                 images = batch["images"].to(self.device)
                 labels = batch["labels"].to(self.device)
+                image_sizes = batch["image_sizes"]
 
                 if "fasterrcnn" in self.config.model_name:
                     labels = self.processor.postprocess_target_batch(
@@ -129,7 +130,7 @@ class Trainer:
 
                 # Forward pass
                 outputs = self.train_step(
-                    step, input_ids, attention_mask, images, labels
+                    step, input_ids, attention_mask, images, labels, image_sizes
                 )
 
                 total_loss += outputs.loss.item()
@@ -201,7 +202,7 @@ class Trainer:
 
         return best_map
 
-    def train_step(self, step, input_ids, attention_mask, images, labels):
+    def train_step(self, step, input_ids, attention_mask, images, labels, image_sizes=None):
         with autocast(
             device_type=self.device.type,
             dtype=self.dtype,  # self.model.torch_dtype,  # torch.bfloat16, more stable than float16
@@ -212,6 +213,7 @@ class Trainer:
                 attention_mask=attention_mask,
                 images=images,
                 labels=labels,
+                image_sizes=image_sizes,
             )
         loss = outputs.loss / self.gradient_accumulation_steps
 
