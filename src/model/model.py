@@ -359,7 +359,8 @@ class VisionLanguageModel(torch.nn.Module):
                 n_image_features *= image_features.shape[2]
             if n_image_tokens != n_image_features:
                 raise ValueError(
-                    f"Image features and image tokens do not match: tokens: {n_image_tokens}, features {n_image_features}"
+                    f"Image features and image tokens do not match: tokens: {n_image_tokens}, features {n_image_features}. "
+                    f"images: {images.shape}, image_sizes: {image_sizes}, image_features: {image_features.shape}, input_ids: {input_ids.shape}"
                 )
 
             # special_image_mask shape is (batch_size, seq_len, token_size_text_encoder)
@@ -411,13 +412,14 @@ class VisionLanguageModel(torch.nn.Module):
         image,
         max_new_tokens=2048,
         stopping_criteria=None,
+        image_sizes: Optional[List[List[int]]] = None,
         **kwargs,
     ):
         if image is None:
             raise ValueError("Image needs to be provided for generation.")
 
         # Image feature extraction
-        image_features = self._get_image_features(image)
+        image_features = self._get_image_features(image, image_sizes)
 
         # Token embeddings
         embedding_layer = self.model.get_input_embeddings()

@@ -282,6 +282,7 @@ class Trainer:
                     temperature=self.config.temperature,
                     top_p=0.9,
                     top_k=50,
+                    image_sizes=batch["image_sizes"],
                 )
 
             if "fasterrcnn" in self.config.model_name:
