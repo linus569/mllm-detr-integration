@@ -388,7 +388,7 @@ class Processor(ProcessorMixin):
             transformed_images[i] = transformed["image"]
             transformed_classes[i] = transformed["class_labels"]
             transformed_classes_id[i] = torch.tensor(
-                transformed["class_ids"], dtype=torch.int64, device=self.config.device
+                transformed["class_ids"], dtype=torch.int64
             )
 
             # Normalize values of bboxes
@@ -398,9 +398,7 @@ class Processor(ProcessorMixin):
                 )
                 for bbox in transformed["bboxes"]
             ]
-            transformed_bboxes[i] = torch.tensor(
-                norm_bboxes, dtype=torch.float32, device=self.config.device
-            )
+            transformed_bboxes[i] = torch.tensor(norm_bboxes, dtype=torch.float32)
 
             if "resnet50" not in self.config.image_encoder.name:
                 # for resnet50 we need padded image size, so do it later
@@ -435,12 +433,7 @@ class Processor(ProcessorMixin):
             # Create a zero tensor of the max size
             channels = transformed_images[0].shape[0]
             images = torch.zeros(
-                batch_size,
-                channels,
-                max_h,
-                max_w,
-                dtype=transformed_images[0].dtype,
-                device=self.config.device,
+                batch_size, channels, max_h, max_w, dtype=transformed_images[0].dtype
             )
 
             # Copy each image into the padded tensor
@@ -488,9 +481,7 @@ class Processor(ProcessorMixin):
             loss_masks[i, pos:] = 1
 
         # Convert loss masks back to PyTorch tensors
-        loss_masks = torch.tensor(
-            loss_masks, dtype=torch.bool, device=self.config.device
-        )
+        loss_masks = torch.tensor(loss_masks, dtype=torch.bool)
 
         ## Create Labels
         # Prepare lables

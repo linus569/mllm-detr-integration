@@ -123,6 +123,10 @@ class Trainer:
                 labels = batch["labels"].to(self.device)
                 if self.config.detr_loss:
                     labels = batch["detr_labels"]
+                    for l in labels:
+                        l["class_labels"] = l["class_labels"].to(self.device)
+                        l["boxes"] = l["boxes"].to(self.device)
+                        
                 image_sizes = batch["image_sizes"]
 
                 if "fasterrcnn" in self.config.model_name:
