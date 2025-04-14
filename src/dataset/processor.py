@@ -127,7 +127,8 @@ class Processor(ProcessorMixin):
         """Special tokens for the processor."""
         special_tokens = []
         num_bins = self.config.num_coordinate_bins
-        coordinate_tokens = generate_coordinate_tokens(num_bins)
+        num_query_tokens = self.config.num_query_tokens
+        coordinate_tokens = generate_coordinate_tokens(num_bins, num_query_tokens)
         special_tokens.extend(coordinate_tokens)
         return special_tokens
 
@@ -569,11 +570,17 @@ class Processor(ProcessorMixin):
             )
         ]
 
-    def postprocess_detr_pred_batch(self, outputs: Dict[str, torch.Tensor]):
+    def postprocess_detr_pred_batch(
+        self,
+        outputs: Dict[str, torch.Tensor],
+        image_sizes: List[Tuple[int, int]],
+        threshold: float = 0.5,
+    ):
         """
         Postprocess DETR model outputs to extract bounding boxes and class labels.
         Args:
             outputs: Dictionary containing model outputs
+            image_sizes: List of tuples with original image sizes
         Returns:
             List of dictionaries with bounding boxes and class labels
         """
@@ -581,19 +588,22 @@ class Processor(ProcessorMixin):
         assert "pred_boxes" in outputs, "No pred_boxes provided"
         assert "pred_logits" in outputs, "No pred_logits provided"
 
-        pred_boxes = outputs.pred_boxes
-        pred_logits = outputs.pred_logits
-
-        # Get the predicted boxes and labels
-        boxes = center_to_corners_format(pred_boxes)
-        boxes = self._unnormalize_bbox(boxes, size=self.image_size)
+        pred_boxes = outputs["pred_boxes"]
+        pred_logits = outputs["pred_logits"]
 
         prob = torch.nn.functional.softmax(pred_logits, -1)
         scores, labels = prob[..., :-1].max(-1)
+        boxes = center_to_corners_format(pred_boxes)
 
         return [
-            {"boxes": box, "labels": label, "scores": score}
-            for box, label, score in zip(boxes, labels, scores)
+            {
+                "boxes": self._unnormalize_bbox(box, size=image_size)[
+                    score > threshold
+                ],
+                "labels": label[score > threshold],
+                "scores": score[score > threshold],
+            }
+            for box, label, score, image_size in zip(boxes, labels, scores, image_sizes)
         ]
 
     def postprocess_xml_batch(

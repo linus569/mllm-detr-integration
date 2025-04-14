@@ -25,6 +25,7 @@ class VisionLanguageModel(torch.nn.Module):
         tokenizer_size: int = None,
         initializers: list[list[int]] = None,
         do_init: bool = True,
+        query_tokens_id: Optional[List[int]] = None,
     ):
         super(VisionLanguageModel, self).__init__()
 
@@ -34,6 +35,7 @@ class VisionLanguageModel(torch.nn.Module):
             ), "Initializers should be provided for new tokens"
 
         self.config = config
+        self.query_tokens_id = query_tokens_id
 
         # Get model components
         # device_map="auto", prints warning, could be ignored https://github.com/huggingface/transformers/issues/31544
@@ -402,6 +404,29 @@ class VisionLanguageModel(torch.nn.Module):
 
         return image_features
 
+    def _use_detr_head(self, input_ids, outputs):
+        # get the last hidden state of the encoder
+        sequence_output = outputs[0]
+        # get the last hidden state of the decoder
+        # sequence_output = outputs[1][-1]
+        # project to d_model size to match the classifier and predictor
+
+        sequence_output_queries = []
+        for ids in input_ids:
+            query_position = torch.where(ids == self.query_tokens_id[0])[0][0]
+            sequence_output_queries.append(
+                sequence_output[
+                    0, query_position : query_position + self.config.num_query_tokens, :
+                ].unsqueeze(0)
+            )
+        sequence_output_queries = torch.cat(sequence_output_queries, dim=0)
+        sequence_output = self.input_projection(sequence_output_queries)
+
+        logits = self.detr_model.class_labels_classifier(sequence_output)
+        pred_boxes = self.detr_model.bbox_predictor(sequence_output).sigmoid()
+
+        return logits, pred_boxes
+
     def forward(
         self,
         input_ids: torch.LongTensor = None,
@@ -470,21 +495,7 @@ class VisionLanguageModel(torch.nn.Module):
         loss = None
         if labels is not None:
             if self.config.detr_loss:
-                # get the last hidden state of the encoder
-                sequence_output = outputs[0]
-                # get the last hidden state of the decoder
-                # sequence_output = outputs[1][-1]
-                # project to d_model size to match the classifier and predictor
-
-                # print(sequence_output.shape)
-                sequence_output = self.input_projection(sequence_output)
-                # print(sequence_output.shape)
-
-                logits = self.detr_model.class_labels_classifier(sequence_output)
-                pred_boxes = self.detr_model.bbox_predictor(sequence_output).sigmoid()
-
-                # TODO: labels currently in wrong format, tokens embeddings, should be list of dict
-                # with boxes and class labels
+                logits, pred_boxes = self._use_detr_head(input_ids, outputs)
 
                 outputs_class = outputs_coord = None  # used only with auxiliary outputs
                 loss = detr_loss(
@@ -548,18 +559,20 @@ class VisionLanguageModel(torch.nn.Module):
         # )
 
         if self.config.detr_loss:
-            # get the last hidden state of the encoder
-            sequence_output = outputs[0]
-            # get the last hidden state of the decoder
-            # sequence_output = outputs[1][-1]
-            # project to d_model size to match the classifier and predictor
+            # LLM forward pass
+            assert self.model.eval()
+            outputs = self.model(
+                attention_mask=attention_mask,
+                position_ids=None,
+                past_key_values=None,
+                inputs_embeds=inputs_embeds,
+                use_cache=None,
+                output_attentions=None,
+                output_hidden_states=None,
+                return_dict=None,
+            )
 
-            # print(sequence_output.shape)
-            sequence_output = self.input_projection(sequence_output)
-            # print(sequence_output.shape)
-
-            logits = self.detr_model.class_labels_classifier(sequence_output)
-            pred_boxes = self.detr_model.bbox_predictor(sequence_output).sigmoid()
+            logits, pred_boxes = self._use_detr_head(input_ids, outputs)
 
             outputs = {
                 "pred_boxes": pred_boxes,

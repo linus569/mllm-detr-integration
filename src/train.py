@@ -311,7 +311,7 @@ class Trainer:
                 predicted_boxes = outputs
                 generated_text = None
             elif self.config.detr_loss:
-                predicted_boxes = self.processor.postprocess_detr_pred_batch(outputs)
+                predicted_boxes = self.processor.postprocess_detr_pred_batch(outputs, batch["image_sizes"])
                 generated_text = None
             else:
                 # Parse model ouput to bbox and lables
@@ -484,6 +484,12 @@ def run_training(config: ExperimentConfig):
                 else None
             ),
             do_init=config.add_special_tokens,
+            # TODO: fix, 00 is hardcoded
+            query_tokens_id=(
+                processor.tokenizer.encode("<query00/>")
+                if config.num_query_tokens > 0
+                else None
+            ),
         ).to(device)
 
     if config.load_checkpoint:
