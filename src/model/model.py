@@ -6,7 +6,7 @@ from llava.model.language_model.llava_qwen import LlavaQwenForCausalLM
 from transformers import AutoModel, DetrForObjectDetection
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
-from model.loss import masked_cross_entropy
+from model.loss import detr_loss, masked_cross_entropy
 from model.partial_frozen_embeddings import (
     PartiallyFrozenEmbedding,
     PartiallyFrozenLMHead,
@@ -164,6 +164,21 @@ class VisionLanguageModel(torch.nn.Module):
 
         self.vocab_size = self.model.get_input_embeddings().num_embeddings
         self.image_token_index = image_token_index
+
+        if self.config.detr_loss:
+            from transformers import DetrConfig
+
+            self.detr_model = DetrForObjectDetection.from_pretrained(
+                "facebook/detr-resnet-50", revision="no_timm"
+            )
+            self.detr_config = self.detr_model.config
+            # currently shape (batch_size, mm_hidden_size, vocab_size)
+            # project to shape (batch_size, mm_hidden_size, d_model)
+            self.input_projection = torch.nn.Sequential(
+                torch.nn.Linear(self.vocab_size, self.detr_config.d_model),
+                torch.nn.GELU(),
+                torch.nn.Linear(self.detr_config.d_model, self.detr_config.d_model),
+            )
 
         log.info("Model initialized")
 
@@ -454,9 +469,37 @@ class VisionLanguageModel(torch.nn.Module):
 
         loss = None
         if labels is not None:
-            loss = masked_cross_entropy(
-                outputs.logits, labels, vocab_size=self.vocab_size
-            )
+            if self.config.detr_loss:
+                # get the last hidden state of the encoder
+                sequence_output = outputs[0]
+                # get the last hidden state of the decoder
+                # sequence_output = outputs[1][-1]
+                # project to d_model size to match the classifier and predictor
+
+                # print(sequence_output.shape)
+                sequence_output = self.input_projection(sequence_output)
+                # print(sequence_output.shape)
+
+                logits = self.detr_model.class_labels_classifier(sequence_output)
+                pred_boxes = self.detr_model.bbox_predictor(sequence_output).sigmoid()
+
+                # TODO: labels currently in wrong format, tokens embeddings, should be list of dict
+                # with boxes and class labels
+
+                outputs_class = outputs_coord = None  # used only with auxiliary outputs
+                loss = detr_loss(
+                    logits=logits,
+                    labels=labels,
+                    device=self.config.device,
+                    pred_boxes=pred_boxes,
+                    config=self.detr_config,
+                    outputs_class=outputs_class,
+                    outputs_coord=outputs_coord,
+                )
+            else:
+                loss = masked_cross_entropy(
+                    outputs.logits, labels, vocab_size=self.vocab_size
+                )
 
         return CausalLMOutputWithPast(
             loss=loss,
@@ -504,14 +547,34 @@ class VisionLanguageModel(torch.nn.Module):
         #     do_sample=do_sample,
         # )
 
-        # direcly call generate on superclass as inputs_embeds is already created and class implementation does not support this
-        outputs = super(LlavaQwenForCausalLM, self.model).generate(
-            inputs_embeds=inputs_embeds,
-            max_new_tokens=max_new_tokens,
-            attention_mask=attention_mask,
-            stopping_criteria=stopping_criteria,
-            **kwargs,
-        )
+        if self.config.detr_loss:
+            # get the last hidden state of the encoder
+            sequence_output = outputs[0]
+            # get the last hidden state of the decoder
+            # sequence_output = outputs[1][-1]
+            # project to d_model size to match the classifier and predictor
+
+            # print(sequence_output.shape)
+            sequence_output = self.input_projection(sequence_output)
+            # print(sequence_output.shape)
+
+            logits = self.detr_model.class_labels_classifier(sequence_output)
+            pred_boxes = self.detr_model.bbox_predictor(sequence_output).sigmoid()
+
+            outputs = {
+                "pred_boxes": pred_boxes,
+                "pred_logits": logits,
+            }
+
+        else:
+            # direcly call generate on superclass as inputs_embeds is already created and class implementation does not support this
+            outputs = super(LlavaQwenForCausalLM, self.model).generate(
+                inputs_embeds=inputs_embeds,
+                max_new_tokens=max_new_tokens,
+                attention_mask=attention_mask,
+                stopping_criteria=stopping_criteria,
+                **kwargs,
+            )
 
         return outputs
 

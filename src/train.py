@@ -116,11 +116,13 @@ class Trainer:
             progress_bar.set_description(f"Train/Epoch {epoch+1}/{num_epochs}")
 
             for batch in self.train_dataloader:
-                # Move batch to device
+                # Move batch to device # TODO: move this to model in own function
                 input_ids = batch["input_ids"].to(self.device)
                 attention_mask = batch["attention_mask"].to(self.device)
                 images = batch["images"].to(self.device)
                 labels = batch["labels"].to(self.device)
+                if self.config.detr_loss:
+                    labels = batch["detr_labels"]
                 image_sizes = batch["image_sizes"]
 
                 if "fasterrcnn" in self.config.model_name:
@@ -307,6 +309,9 @@ class Trainer:
 
             if "fasterrcnn" in self.config.model_name:
                 predicted_boxes = outputs
+                generated_text = None
+            elif self.config.detr_loss:
+                predicted_boxes = self.processor.postprocess_detr_pred_batch(outputs)
                 generated_text = None
             else:
                 # Parse model ouput to bbox and lables

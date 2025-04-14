@@ -12,12 +12,13 @@ tokens_dict = {
 }
 
 
-def generate_coordinate_tokens(num_bins: int) -> List[str]:
+def generate_coordinate_tokens(num_bins: int, num_query_tokens: int = 0) -> List[str]:
     """
     Generate special tokens for annotations and coordinates.
 
     Args:
         num_bins: Number of discrete bins for coordinates
+        num_query_tokens: Number of query tokens to generate
 
     Returns:
         List of special tokens
@@ -29,6 +30,10 @@ def generate_coordinate_tokens(num_bins: int) -> List[str]:
     for i in range(num_bins):
         new_tokens.append(f"<x{i:0{length}d}/>")
         new_tokens.append(f"<y{i:0{length}d}/>")
+
+    length = len(str(num_query_tokens - 1))
+    for i in range(num_query_tokens):
+        new_tokens.append(f"<query{i:0{length}d}/>")
 
     return new_tokens
 
@@ -60,6 +65,8 @@ def get_token_initializers(
             initializers[token] = get_token_ids(f"coordinate x{token[2:-2]}")
         elif token.startswith("<y"):
             initializers[token] = get_token_ids(f"coordinate y{token[2:-2]}")
+        elif token.startswith("<query"):
+            initializers[token] = get_token_ids(f"coordinate query{token[6:-2]}")
         else:
             initializers[token] = []
 

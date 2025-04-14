@@ -97,3 +97,6 @@ class ExperimentConfig:
     freeze_model: bool = True
 
     bbox_ordering: str = "none"  # Options: "none", "random", "size_desc"
+
+    num_query_tokens: int = 0
+    detr_loss: bool = False

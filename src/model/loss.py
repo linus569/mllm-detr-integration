@@ -1,6 +1,29 @@
 import torch
 import torch.nn.functional as F
 
+from transformers.loss.loss_for_object_detection import ForObjectDetectionLoss
+
+def detr_loss(
+    logits, labels, device, pred_boxes, config, outputs_class=None, outputs_coord=None, **kwargs
+):
+    """
+    Compute the loss for DETR model.
+
+    Args:
+        logits: Model logits
+        labels: Target labels
+        device: Device to use
+        pred_boxes: Predicted bounding boxes
+        config: Configuration object
+        outputs_class: Class outputs (optional)
+        outputs_coord: Coordinate outputs (optional)
+        **kwargs: Additional arguments
+
+    Returns:
+        The computed loss
+    """
+    loss, loss_dict, auxiliary_outputs = ForObjectDetectionLoss(logits=logits, labels=labels, device=device, pred_boxes=pred_boxes, config=config, outputs_class=outputs_class, outputs_coord=outputs_coord, **kwargs)
+    return loss # loss_dict
 
 # currently same as in transformers.loss.loss_utils
 def masked_cross_entropy(

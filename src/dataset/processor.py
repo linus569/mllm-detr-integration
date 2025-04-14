@@ -14,6 +14,10 @@ from PIL import Image
 from tokenizers import AddedToken
 from torch.utils.data import Subset
 from transformers import AutoTokenizer
+from transformers.models.detr.image_processing_detr import (
+    center_to_corners_format,
+    corners_to_center_format,
+)
 from transformers.processing_utils import ProcessorMixin
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
@@ -258,12 +262,19 @@ class Processor(ProcessorMixin):
         # user_text = f"<|im_start|>user\n{image_tokens}\n{prompt}<|im_end|>\n"
         # assistent_text = "<|im_start|>assistant\n"
 
+        query_tokens = ""
+        if self.config.detr_loss:
+            length = len(str(self.config.num_query_tokens - 1))
+            for i in range(self.config.num_query_tokens):
+                tok = f"<query{i:0{length}d}/>"
+                query_tokens += f"{tok}"
+
         # Combine all elements with chat structure
         combined_text = (
             "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
             "<|im_start|>user\n"
             f"{image_tokens}\n"
-            f"{prompt}<|im_end|>\n"
+            f"{prompt}{query_tokens}<|im_end|>\n"
             "<|im_start|>assistant\n"
         )
 
@@ -480,11 +491,25 @@ class Processor(ProcessorMixin):
         labels[labels == self.image_token_index] = -100  # Mask image tokens
         labels[loss_masks == 0] = -100  # Mask everything except the answer tokens
 
+        detr_labels = None
+        if self.config.detr_loss:
+            detr_labels = [None] * batch_size
+            for i, (label, bbox) in enumerate(
+                zip(transformed_classes_id, transformed_bboxes)
+            ):
+                detr_labels[i] = {
+                    "class_labels": label,
+                    "boxes": corners_to_center_format(bbox),
+                }
+
+            # TODO: move creating labels in else part
+
         return {
             "input_ids": tokenized["input_ids"],
             "attention_mask": tokenized["attention_mask"],
             "images": images,
             "labels": labels,
+            "detr_labels": detr_labels,
             # for evaluation purposes
             # TODO: put here "targets": self.postprocess_target_batch(...)
             "instance_bboxes": transformed_bboxes,
@@ -543,6 +568,32 @@ class Processor(ProcessorMixin):
                 batch["image_sizes"],
             )
         ]
+
+    def postprocess_detr_pred_batch(self, outputs: Dict[str, torch.Tensor]):
+        """
+        Postprocess DETR model outputs to extract bounding boxes and class labels.
+        Args:
+            outputs: Dictionary containing model outputs
+        Returns:
+            List of dictionaries with bounding boxes and class labels
+        """
+        assert outputs is not None, "No batch provided"
+        assert "pred_boxes" in outputs, "No pred_boxes provided"
+        assert "pred_logits" in outputs, "No pred_logits provided"
+
+        pred_boxes = outputs.pred_boxes
+        pred_logits = outputs.pred_logits
+
+        # Get the predicted boxes and labels
+        boxes = center_to_corners_format(pred_boxes)
+        boxes = self._unnormalize_bbox(boxes, size=self.image_size)
+
+        prob = torch.nn.functional.softmax(pred_logits, -1)
+        scores, labels = prob[..., :-1].max(-1)
+
+        return [
+            {"boxes": box, "labels": label, "scores": score}
+            for box, label, score in zip(boxes, labels, scores)
         ]
 
     def postprocess_xml_batch(
