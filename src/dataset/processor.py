@@ -543,7 +543,6 @@ class Processor(ProcessorMixin):
                 batch["image_sizes"],
             )
         ]
-        ]
 
     def postprocess_xml_batch(
         self,
