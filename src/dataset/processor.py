@@ -123,8 +123,7 @@ class Processor(ProcessorMixin):
         """Special tokens for the processor."""
         special_tokens = []
         num_bins = self.config.num_coordinate_bins
-        shared_coords = True  # TODO: config
-        coordinate_tokens = generate_coordinate_tokens(num_bins, shared_coords)
+        coordinate_tokens = generate_coordinate_tokens(num_bins)
         special_tokens.extend(coordinate_tokens)
         return special_tokens
 

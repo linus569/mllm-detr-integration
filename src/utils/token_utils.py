@@ -12,41 +12,40 @@ tokens_dict = {
 }
 
 
-def generate_coordinate_tokens(num_bins: int, shared_coords: bool = True) -> List[str]:
+def generate_coordinate_tokens(num_bins: int) -> List[str]:
     """
     Generate special tokens for annotations and coordinates.
 
     Args:
         num_bins: Number of discrete bins for coordinates
-        shared_coords: If True, generates shared x/y coordinate tokens
 
     Returns:
         List of special tokens
     """
     new_tokens = list(tokens_dict.keys())
 
-    if shared_coords:
-        length = len(str(num_bins - 1))
-        for i in range(num_bins):
-            new_tokens.append(f"<x{i:0{length}d}/>")
-            new_tokens.append(f"<y{i:0{length}d}/>")
+    # Generate coordinate tokens
+    length = len(str(num_bins - 1))  # Calculate string length for formatting
+    for i in range(num_bins):
+        new_tokens.append(f"<x{i:0{length}d}/>")
+        new_tokens.append(f"<y{i:0{length}d}/>")
 
     return new_tokens
 
 
-def spatial_position_initialization(
+def get_token_initializers(
     tokenizer, coordinate_tokens: List[str]
 ) -> Dict[str, List[int]]:
     """
-    Initialize tokens using spatial position concepts already in vocabulary.
+    Create initializers for added tokens, mapping them to semantically
+    similar tokens in the existing vocabulary.
 
     Args:
-        tokenizer: Tokenizer to use for encoding
+        tokenizer: The tokenizer to use for encoding
         coordinate_tokens: List of special tokens to initialize
-        num_bins: Number of coordinate bins (for potential fallback logic)
 
     Returns:
-        Dictionary mapping tokens to initialization token IDs
+        Dictionary mapping token to list of token IDs for initialization
     """
     initializers = {}
 
@@ -63,24 +62,5 @@ def spatial_position_initialization(
             initializers[token] = get_token_ids(f"coordinate y{token[2:-2]}")
         else:
             initializers[token] = []
-
-    return initializers
-
-
-def get_token_initializers(
-    tokenizer, coordinate_tokens: List[str]
-) -> Dict[str, List[int]]:
-    """
-    Create initializers for coordinate tokens, mapping them to semantically
-    similar tokens in the existing vocabulary.
-
-    Args:
-        tokenizer: The tokenizer to use for encoding
-        coordinate_tokens: List of special tokens to initialize
-
-    Returns:
-        Dictionary mapping token to list of token IDs for initialization
-    """
-    initializers = spatial_position_initialization(tokenizer, coordinate_tokens)
 
     return initializers

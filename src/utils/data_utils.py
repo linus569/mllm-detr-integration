@@ -50,7 +50,7 @@ def show_img_with_bbox(sample, dataset, title=None, figsize=(10, 10)):
                 x2 * img.shape[1],
                 y2 * img.shape[0],
             )
-            print(x1, y1, x2, y2)
+            # print(x1, y1, x2, y2)
             rect = plt.Rectangle(
                 (x1, y1), x2 - x1, y2 - y1, linewidth=1, edgecolor="r", facecolor="none"
             )

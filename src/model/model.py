@@ -367,7 +367,7 @@ class VisionLanguageModel(torch.nn.Module):
 
                     image_features = encoder_outputs[0]
                     # image_features = image_features.permute(0, 2, 1)
-                    print(image_features.shape)
+                    # print(image_features.shape)
 
                     # image_features = encoder_outputs[1]
                     # print(image_features.shape)
