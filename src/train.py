@@ -9,9 +9,14 @@ from utils.config import ExperimentConfig
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+import torch
+# fix graph breaks in detr loss
+torch._dynamo.config.capture_scalar_outputs = True
+# Set TensorFloat32 precision for better performance
+torch.set_float32_matmul_precision('high')
+
 import hydra
 import numpy as np
-import torch
 from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig, OmegaConf
 from torch import autocast

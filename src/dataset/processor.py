@@ -498,9 +498,13 @@ class Processor(ProcessorMixin):
             for i, (label, bbox) in enumerate(
                 zip(transformed_classes_id, transformed_bboxes)
             ):
+                if bbox.numel() == 0 or bbox.shape[0] == 0:
+                    center_bbox = torch.zeros((0, 4), dtype=bbox.dtype)
+                else:
+                    center_bbox = corners_to_center_format(bbox)
                 detr_labels[i] = {
                     "class_labels": label,
-                    "boxes": corners_to_center_format(bbox),
+                    "boxes": center_bbox,
                 }
 
             # TODO: move creating labels in else part
