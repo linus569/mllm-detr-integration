@@ -13,9 +13,9 @@ from dataset.processor import Processor
 from utils.config import DatasetConfig, ExperimentConfig
 from utils.train_utils import build_dataloader
 
-OmegaConf.register_new_resolver(
-    "ifel", lambda flag, val_true, val_false: val_true if flag else val_false
-)
+# OmegaConf.register_new_resolver(
+#     "ifel", lambda flag, val_true, val_false: val_true if flag else val_false
+# )
 
 
 @pytest.fixture
@@ -81,3 +81,22 @@ def test_input_ids_shape(dataloader):
     """Test that input_ids have the expected shape."""
     batch = next(iter(dataloader))
     assert len(batch["input_ids"].shape) == 2, "input_ids should be 2-dimensional"
+
+def test_bbox_ordering(config, processor):
+    config.bbox_ordering = "size_desc"
+
+    dataloader = build_dataloader(
+        processor=processor,
+        dataset_config=config.train_dataset,
+        batch_size=2,
+        is_train=True,
+        num_workers=config.num_workers,
+        subset_size=10,
+    )
+
+    batch = next(iter(dataloader))
+    print(batch["instance_bboxes"])
+    sizes = [(box[2] - box[0]) * (box[3] - box[0]) for box in batch["instance_bboxes"][0]]
+    assert sizes == sorted(sizes, reverse=True), "Bounding boxes should be sorted by size"
+    print(batch["bbox_str"])
+

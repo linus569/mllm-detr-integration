@@ -19,9 +19,9 @@ from utils.config import DatasetConfig, ExperimentConfig
 from utils.train_metrics import TrainMetrics
 from utils.train_utils import JSONStoppingCriteria, build_val_dataloader
 
-OmegaConf.register_new_resolver(
-    "ifel", lambda flag, val_true, val_false: val_true if flag else val_false
-)
+# OmegaConf.register_new_resolver(
+#     "ifel", lambda flag, val_true, val_false: val_true if flag else val_false
+# )
 
 # load hydra configs
 cs = ConfigStore.instance()
