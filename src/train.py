@@ -157,23 +157,41 @@ class Trainer:
 
                         # log num of added tokens in labels
                         try:
-                            logits_masked_max_index = logits_masked.argmax(dim=-1).cpu().numpy()
+                            logits_masked_max_index = (
+                                logits_masked.argmax(dim=-1).cpu().numpy()
+                            )
                             wandb.log(
                                 {
-                                    "debug/num_added_tokens_in_labels": np.count_nonzero(np.array(labels.cpu() > 151646)),
-                                    "debug/num_added_tokens_in_logits": np.count_nonzero(np.array(logits_masked_max_index > 151646))
-                                }, step=step
+                                    "debug/num_added_tokens_in_labels": np.count_nonzero(
+                                        np.array(labels.cpu() > 151646)
+                                    ),
+                                    "debug/num_added_tokens_in_logits": np.count_nonzero(
+                                        np.array(logits_masked_max_index > 151646)
+                                    ),
+                                },
+                                step=step,
                             )
 
                             # log logits
                             wandb.log(
                                 {
-                                    #print("annotation tag logit:", logits_masked[0][annotation_tag], "; max logit:", logits_masked[0].max(), " ; max logit index:", logits_masked[0].argmax(), " ; max decoded:", tokenizer.decode(logits_masked[0].argmax()))
-                                    "debug/logits_0_max_value": logits_masked[0].max().cpu().item(),
-                                    "debug/logits_0_max_index": logits_masked[0].argmax().cpu().item(),
-                                    "debug/logits_0_max_decoded": self.processor.tokenizer.decode(logits_masked[0,0].argmax().cpu().item()),
-                                    "debug/logits_ann_tag_value": logits_masked[0, 151653]
-                                }, step=step
+                                    # print("annotation tag logit:", logits_masked[0][annotation_tag], "; max logit:", logits_masked[0].max(), " ; max logit index:", logits_masked[0].argmax(), " ; max decoded:", tokenizer.decode(logits_masked[0].argmax()))
+                                    "debug/logits_0_max_value": logits_masked[0]
+                                    .max()
+                                    .cpu()
+                                    .item(),
+                                    "debug/logits_0_max_index": logits_masked[0]
+                                    .argmax()
+                                    .cpu()
+                                    .item(),
+                                    "debug/logits_0_max_decoded": self.processor.tokenizer.decode(
+                                        logits_masked[0, 0].argmax().cpu().item()
+                                    ),
+                                    "debug/logits_ann_tag_value": logits_masked[
+                                        0, 151653
+                                    ],
+                                },
+                                step=step,
                             )
                         except Exception as e:
                             log.warning(f"Error logging debug metrics: {e}")
@@ -202,7 +220,9 @@ class Trainer:
 
         return best_map
 
-    def train_step(self, step, input_ids, attention_mask, images, labels, image_sizes=None):
+    def train_step(
+        self, step, input_ids, attention_mask, images, labels, image_sizes=None
+    ):
         with autocast(
             device_type=self.device.type,
             dtype=self.dtype,  # self.model.torch_dtype,  # torch.bfloat16, more stable than float16
@@ -305,6 +325,7 @@ class Trainer:
                 generated_text=generated_text,
                 target_texts=batch["bbox_str"],
             )
+            # print(self.metric.compute())
 
         # progress_bar.clear()
         progress_bar.close()

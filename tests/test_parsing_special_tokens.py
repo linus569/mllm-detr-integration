@@ -65,16 +65,14 @@ def test_postprocess_to_xml(processor):
         processor._postprocess_xml(invalid_input, {"dog": 0}, "cpu")
 
 
-
 def test_preprocess_to_xml(processor):
     # Test valid input
     list_classes = ["dog"]
-    list_boxes = torch.tensor([[0, .12, .25, .39]])
+    list_boxes = torch.tensor([[0, 0.12, 0.25, 0.39]])
 
     correct_result = "<annotation><object><class>dog</class><bbox><x0/><y1/><x2/><y3/></bbox></object></annotation>"
     result = processor.format_bbox_to_xml(list_classes, list_boxes)
     assert result == correct_result
-
 
 
 # JSON

@@ -62,9 +62,11 @@ class PartiallyFrozenEmbedding(nn.Module):
         trainable_input_ids = input_ids.clamp(min=self.num_frozen) - self.num_frozen
         frozen_embed = self.frozen_embedding(frozen_input_ids)
         trainable_embed = self.trainable_embedding(trainable_input_ids)
-        embeddings = torch.where(frozen_mask.unsqueeze(-1), frozen_embed, trainable_embed)
+        embeddings = torch.where(
+            frozen_mask.unsqueeze(-1), frozen_embed, trainable_embed
+        )
 
-        #assert torch.allclose(embeddings, embeddings2)
+        # assert torch.allclose(embeddings, embeddings2)
 
         return embeddings
 

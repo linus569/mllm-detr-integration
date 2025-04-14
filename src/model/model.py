@@ -309,11 +309,20 @@ class VisionLanguageModel(torch.nn.Module):
                 for i, size in enumerate(image_sizes):
                     pixel_mask[i, : size[0], : size[1]] = 1
 
+                # pixel_mask = torch.ones(
+                #     pixel_values.shape[0],
+                #     pixel_values.shape[2],
+                #     pixel_values.shape[3],
+                #     dtype=torch.bool,
+                # )
+
                 pixel_mask = pixel_mask.to(pixel_values.device)
                 # pixel_values = pixel_values.flatten(0, 1)
                 features, object_queries_list = self.image_encoder(
                     pixel_values, pixel_mask
                 )
+                # print(image_sizes, pixel_values.shape)
+
                 # get final feature map and downsampled mask
                 feature_map, mask = features[-1]
 
@@ -346,10 +355,22 @@ class VisionLanguageModel(torch.nn.Module):
                         output_hidden_states=True,
                         return_dict=False,
                     )
+                    # # If the user passed a tuple for encoder_outputs, we wrap it in a BaseModelOutput when return_dict=True
+                    # elif return_dict and not isinstance(encoder_outputs, BaseModelOutput):
+                    #     encoder_outputs = BaseModelOutput(
+                    #         last_hidden_state=encoder_outputs[0],
+                    #         hidden_states=encoder_outputs[1] if len(encoder_outputs) > 1 else None,
+                    #         attentions=encoder_outputs[2] if len(encoder_outputs) > 2 else None,
+                    #     )
+                    # print(encoder_outputs)
+                    # tuple(v for v in [hidden_states, encoder_states, all_attentions] if v is not None)
+
                     image_features = encoder_outputs[0]
                     # image_features = image_features.permute(0, 2, 1)
                     print(image_features.shape)
 
+                    # image_features = encoder_outputs[1]
+                    # print(image_features.shape)
                 else:
                     image_features = feature_map.flatten(2).permute(0, 2, 1)
                     # print(image_features.shape)
@@ -358,9 +379,10 @@ class VisionLanguageModel(torch.nn.Module):
                 image_features = self.image_encoder(pixel_values)
 
         image_features = image_features.to(self.model.device, self.model.dtype)
-
+        # print("image_features:", image_features.shape)
         # Project image features to token size
         image_features = self.projector(image_features)
+        # print("projected image_features:", image_features.shape)
         # shape of image_features is (batch_size, (num_patches), num_image_tokens, token_size_text_encoder)
 
         return image_features

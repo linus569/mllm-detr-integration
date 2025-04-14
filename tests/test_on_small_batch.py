@@ -36,7 +36,7 @@ def main():
             config_name="train",
             overrides=["+experiment=train_local_test", "main_dir='.'"],
         )
-        #print(OmegaConf.to_yaml(config))
+        # print(OmegaConf.to_yaml(config))
 
     MODEL_NAME = "last_model_legendary-cloud-125.pt"
     config.num_coordinate_bins = 100
@@ -63,9 +63,7 @@ def main():
     ).get("model_state_dict")
     model.load_state_dict(state_dict)
 
-    val_dataloader = build_val_dataloader(
-        config, processor, 5, use_random_subset=False
-    )
+    val_dataloader = build_val_dataloader(config, processor, 5, use_random_subset=False)
     metrics = TrainMetrics(device)
 
     model.eval()
@@ -102,6 +100,7 @@ def main():
     print(f"mAP@75: {result['map_75']}")
     print(f"BLEU: {result['bleu_score']}")
     print(f"METEOR: {result['meteor_score']}")
+
 
 if __name__ == "__main__":
     main()

@@ -72,7 +72,7 @@ def test_dataset_processor_model(config):
     # print(model)
     print(model.model.config)
     print(model.image_encoder.config)
-    #print(model.image_size) # image_size moved from model to processor
+    # print(model.image_size) # image_size moved from model to processor
 
     # print("projector model", model.text_encoder.projector)
     # print("projector", model.projector)

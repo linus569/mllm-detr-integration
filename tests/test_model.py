@@ -81,6 +81,7 @@ def test_model_forward(model):
     assert isinstance(outputs_with_labels.loss, torch.Tensor)
     assert outputs_with_labels.loss.dim() == 0  # Loss should be a scalar
 
+
 def test_model_forward_patches(model):
     batch_size = 2
     seq_length = 6000

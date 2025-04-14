@@ -40,7 +40,11 @@ def config():
         # Load configuration from the default.yaml file
         cfg = compose(
             config_name="train",
-            overrides=["+experiment=train_local_test", "main_dir='.'", "image_encoder=resnet50"],
+            overrides=[
+                "+experiment=train_local_test",
+                "main_dir='.'",
+                "image_encoder=resnet50",
+            ],
         )
         return ExperimentConfig(**cfg)
 
@@ -81,7 +85,7 @@ def test_image_features_count(config, processor, model, batch_size):
     """
     # Take a small subset for testing
     config.batch_size = batch_size
-    num_samples = None#5
+    num_samples = None  # 5
     dataloader = build_train_dataloader(config, processor, subset_size=num_samples)
 
     # Test each batch
@@ -107,7 +111,9 @@ def test_image_features_count(config, processor, model, batch_size):
             if "resnet50" in config.image_encoder.name:
                 # For ResNet50, features depend on image dimensions
                 img_h, img_w = images.shape[2], images.shape[3]
-                expected_features = batch_size * (math.ceil(img_w / 32) * math.ceil(img_h / 32))
+                expected_features = batch_size * (
+                    math.ceil(img_w / 32) * math.ceil(img_h / 32)
+                )
             else:
                 # For other encoders, use configured number of tokens
                 expected_features = batch_size * processor.num_image_tokens

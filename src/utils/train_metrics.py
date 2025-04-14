@@ -54,7 +54,7 @@ class TrainMetrics:
         """
         try:
             self.metric.update(predicted_boxes, target_boxes)
-            
+
             if generated_text is not None and target_texts is not None:
                 for pred, target in zip(generated_text, target_texts):
                     self.total_bleu_score += sentence_bleu(
@@ -75,7 +75,7 @@ class TrainMetrics:
 
     def compute(self) -> Dict[str, float]:
         """Compute metrics.
-        
+
         Returns:
             Dict[str, float]: Computed metrics.
         """
@@ -88,7 +88,7 @@ class TrainMetrics:
         )
 
         # TODO: json accuaracy
-        
+
         return {
             "map": metrics["map"].item(),
             "map_50": metrics["map_50"].item(),

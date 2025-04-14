@@ -82,6 +82,7 @@ def test_input_ids_shape(dataloader):
     batch = next(iter(dataloader))
     assert len(batch["input_ids"].shape) == 2, "input_ids should be 2-dimensional"
 
+
 def test_bbox_ordering(config, processor):
     config.bbox_ordering = "size_desc"
 
@@ -96,7 +97,10 @@ def test_bbox_ordering(config, processor):
 
     batch = next(iter(dataloader))
     print(batch["instance_bboxes"])
-    sizes = [(box[2] - box[0]) * (box[3] - box[0]) for box in batch["instance_bboxes"][0]]
-    assert sizes == sorted(sizes, reverse=True), "Bounding boxes should be sorted by size"
+    sizes = [
+        (box[2] - box[0]) * (box[3] - box[0]) for box in batch["instance_bboxes"][0]
+    ]
+    assert sizes == sorted(
+        sizes, reverse=True
+    ), "Bounding boxes should be sorted by size"
     print(batch["bbox_str"])
-
