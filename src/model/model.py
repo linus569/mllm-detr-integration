@@ -59,12 +59,13 @@ class VisionLanguageModel(torch.nn.Module):
             log.info(
                 f"Image encoder {self.config.image_encoder.name} initialized with output dim {dinov2_embed_dim} -> {llm_embed_dim}"
             )
-        elif self.config.image_encoder.name == "resnet50":
+        elif "resnet50" in self.config.image_encoder.name:
             log.info("Using ResNet50 image encoder")
 
             model = DetrForObjectDetection.from_pretrained(
                 "facebook/detr-resnet-50", revision="no_timm"
             )
+            self.model_detr = model.model
             self.image_encoder = model.model.backbone
             llm_embed_dim = self.model.config.hidden_size
 
@@ -76,6 +77,12 @@ class VisionLanguageModel(torch.nn.Module):
                 torch.nn.GELU(),
                 torch.nn.Linear(llm_embed_dim, llm_embed_dim),
             )
+            if "encoder" in self.config.image_encoder.name:
+                self.projector = torch.nn.Sequential(
+                    torch.nn.Linear(256, llm_embed_dim),
+                    torch.nn.GELU(),
+                    torch.nn.Linear(llm_embed_dim, llm_embed_dim),
+                )
 
             log.info(
                 f"Image encoder {self.config.image_encoder.name} initialized with output dim {resnet_embed_dim}"
@@ -135,9 +142,15 @@ class VisionLanguageModel(torch.nn.Module):
             )
         )
 
-        log.info(f"frozen input embed: {self.model.get_input_embeddings().frozen_embedding}")
-        log.info(f"trainable input embed: {self.model.get_input_embeddings().trainable_embedding}")
-        log.info(f"full input embed size: {self.model.get_input_embeddings().num_embeddings}")
+        log.info(
+            f"frozen input embed: {self.model.get_input_embeddings().frozen_embedding}"
+        )
+        log.info(
+            f"trainable input embed: {self.model.get_input_embeddings().trainable_embedding}"
+        )
+        log.info(
+            f"full input embed size: {self.model.get_input_embeddings().num_embeddings}"
+        )
 
         log.info(
             f"frozen output embed: {self.model.get_output_embeddings().frozen_lm_head}"
@@ -284,7 +297,7 @@ class VisionLanguageModel(torch.nn.Module):
                     image_features = outputs.pooler_output.unsqueeze(1)
                 else:
                     image_features = outputs.last_hidden_state
-            elif encoder_name == "resnet50":
+            elif "resnet50" in encoder_name:
                 # use image_sizes to create pixel_mask
                 pixel_mask = torch.zeros(
                     pixel_values.shape[0],
@@ -303,14 +316,43 @@ class VisionLanguageModel(torch.nn.Module):
                 )
                 # get final feature map and downsampled mask
                 feature_map, mask = features[-1]
+
                 if mask is None:
                     raise ValueError("Backbone does not return downsampled pixel mask")
 
-                # Second, apply 1x1 convolution to reduce the channel dimension to d_model (256 by default)
-                # TODO: permutation correct?
-                image_features = feature_map.flatten(2).permute(0, 2, 1)
-                # print(image_features.shape)
+                if "encoder" in self.config.image_encoder.name:
+                    # Second, apply 1x1 convolution to reduce the channel dimension to d_model (256 by default)
+                    projected_feature_map = self.model_detr.input_projection(
+                        feature_map
+                    )
 
+                    # Third, flatten the feature map + position embeddings of shape NxCxHxW to NxCxHW, and permute it to NxHWxC
+                    # In other words, turn their shape into (batch_size, sequence_length, hidden_size)
+                    flattened_features = projected_feature_map.flatten(2).permute(
+                        0, 2, 1
+                    )
+                    object_queries = object_queries_list[-1].flatten(2).permute(0, 2, 1)
+
+                    flattened_mask = mask.flatten(1)
+
+                    # Fourth, sent flattened_features + flattened_mask + position embeddings through encoder
+                    # flattened_features is a Tensor of shape (batch_size, heigth*width, hidden_size)
+                    # flattened_mask is a Tensor of shape (batch_size, heigth*width)
+                    encoder_outputs = self.model_detr.encoder(
+                        inputs_embeds=flattened_features,
+                        attention_mask=flattened_mask,
+                        object_queries=object_queries,
+                        output_attentions=None,
+                        output_hidden_states=True,
+                        return_dict=False,
+                    )
+                    image_features = encoder_outputs[0]
+                    # image_features = image_features.permute(0, 2, 1)
+                    print(image_features.shape)
+
+                else:
+                    image_features = feature_map.flatten(2).permute(0, 2, 1)
+                    # print(image_features.shape)
             else:
                 # use siglip, already in correct format
                 image_features = self.image_encoder(pixel_values)
@@ -362,7 +404,6 @@ class VisionLanguageModel(torch.nn.Module):
                     f"Image features and image tokens do not match: tokens: {n_image_tokens}, features {n_image_features}. "
                     f"images: {images.shape}, image_sizes: {image_sizes}, image_features: {image_features.shape}, input_ids: {input_ids.shape}"
                 )
-
             # special_image_mask shape is (batch_size, seq_len, token_size_text_encoder)
             # inputs_embeds shape is (batch_size, seq_len, token_size_text_encoder)
             # image_features shape is (batch_size, num_image_tokens, token_size_text_encoder)

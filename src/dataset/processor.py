@@ -77,7 +77,7 @@ class Processor(ProcessorMixin):
             ),
         )
 
-        if config.image_encoder.name == "resnet50":
+        if "resnet50" in config.image_encoder.name:
             self.bbox_transform = A.Compose(
                 [
                     A.LongestMaxSize(max_size=1333, interpolation=self.interpolation),
@@ -225,6 +225,9 @@ class Processor(ProcessorMixin):
             train: Whether the processor is used for training data
         """
         # Add image tokens based on number of patches
+        # if self.config.image_encoder.name == "resnet50":
+        #     image_tokens = f"{self.image_token}"
+        # else:
         image_tokens = (
             f"{self.image_token}" * (num_img_tokens * (num_image_patches + 1))
         ).strip()
@@ -386,7 +389,7 @@ class Processor(ProcessorMixin):
             ]
             transformed_bboxes[i] = torch.tensor(norm_bboxes, dtype=torch.float32)
 
-            if self.config.image_encoder.name != "resnet50":
+            if "resnet50" not in self.config.image_encoder.name:
                 # for resnet50 we need padded image size, so do it later
                 text_inputs[i], bbox_str[i] = self.prepare_text_input(
                     self.num_image_tokens,
@@ -397,15 +400,16 @@ class Processor(ProcessorMixin):
                     train=train,
                 )
 
-        if self.config.image_encoder.name == "resnet50":
+        if "resnet50" in self.config.image_encoder.name:
             # variable sized images, pad images
             # Find max dimensions in this batch
             max_h = max(img.shape[1] for img in transformed_images)
             max_w = max(img.shape[2] for img in transformed_images)
+            num_img_tokens = math.ceil(max_w / 32) * math.ceil(max_h / 32)
 
             for i, sample in enumerate(batch):
                 text_inputs[i], bbox_str[i] = self.prepare_text_input(
-                    num_img_tokens = math.ceil(max_w / 32) * math.ceil(max_h / 32),
+                    num_img_tokens=num_img_tokens,
                     instance_classes_str=transformed_classes[i],
                     instance_bboxes=transformed_bboxes[i],
                     captions=sample["captions"],
@@ -413,7 +417,7 @@ class Processor(ProcessorMixin):
                     train=train,
                 )
 
-            #log.info(f"padded image_size: ({max_h}, {max_w})")
+            # log.info(f"padded image_size: ({max_h}, {max_w})")
 
             # Create a zero tensor of the max size
             channels = transformed_images[0].shape[0]
