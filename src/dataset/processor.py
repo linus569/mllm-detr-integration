@@ -429,12 +429,13 @@ class Processor(ProcessorMixin):
                 c, h, w = img.shape
                 images[i, :, :h, :w] = img
 
-            # Store the original image sizes for proper feature map calculation
-            image_sizes = [(img.shape[1], img.shape[2]) for img in transformed_images]
         else:
             # fixed_size images, stack tensors
             images = torch.stack(transformed_images)
-            image_sizes = None
+            # image_sizes = None
+
+        # Store the original image sizes for proper feature map calculation
+        image_sizes = [(img.shape[1], img.shape[2]) for img in transformed_images]
 
         if train:  # fast_att only allow left padding
             self.tokenizer.padding_side = "right"
@@ -533,12 +534,15 @@ class Processor(ProcessorMixin):
 
         return [
             {
-                "boxes": self._unnormalize_bbox(boxes.to(device), size=self.image_size),
+                "boxes": self._unnormalize_bbox(boxes.to(device), size=image_size),
                 "labels": labels.to(device),
             }
-            for boxes, labels in zip(
-                batch["instance_bboxes"], batch["instance_classes_id"]
+            for boxes, labels, image_size in zip(
+                batch["instance_bboxes"],
+                batch["instance_classes_id"],
+                batch["image_sizes"],
             )
+        ]
         ]
 
     def postprocess_xml_batch(
@@ -546,6 +550,7 @@ class Processor(ProcessorMixin):
         sequence: torch.LongTensor,
         dataset: Union[COCODataset, Subset],
         device: str,
+        image_sizes: List[Tuple[int, int]],
     ):
         assert sequence is not None, "No batch provided"
 
@@ -562,7 +567,10 @@ class Processor(ProcessorMixin):
             try:
                 results.append(
                     self._postprocess_xml(
-                        text=text, cat_name_to_id=category_dict, device=device
+                        text=text,
+                        cat_name_to_id=category_dict,
+                        device=device,
+                        image_size=image_sizes[i],
                     )
                 )
             except Exception as e:
@@ -578,7 +586,13 @@ class Processor(ProcessorMixin):
 
         return generated_text, results
 
-    def _postprocess_xml(self, text: str, cat_name_to_id: Dict[str, int], device: str):
+    def _postprocess_xml(
+        self,
+        text: str,
+        cat_name_to_id: Dict[str, int],
+        device: str,
+        image_size: Tuple[int, int],
+    ):
         assert text is not None, "No text provided"
 
         start_idx = text.find("<annotation>")
@@ -629,7 +643,7 @@ class Processor(ProcessorMixin):
             text_labels = text_labels[:valid_count]
             text_scores = text_scores[:valid_count]
 
-        text_bbox = self._unnormalize_bbox(text_bbox, size=self.image_size)
+        text_bbox = self._unnormalize_bbox(text_bbox, size=image_size)
 
         return {
             "boxes": text_bbox,

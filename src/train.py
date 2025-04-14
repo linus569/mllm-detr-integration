@@ -150,7 +150,7 @@ class Trainer:
                         step=step,
                     )
 
-                    if outputs.logits is not None:
+                    if False and outputs.logits is not None:
                         # get masked logits
                         mask = batch["labels"] != -100
                         logits_masked = outputs.logits[mask]
@@ -311,7 +311,7 @@ class Trainer:
             else:
                 # Parse model ouput to bbox and lables
                 generated_text, predicted_boxes = self.processor.postprocess_xml_batch(
-                    outputs, val_dataloader.dataset, self.device
+                    outputs, val_dataloader.dataset, self.device, batch["image_sizes"]
                 )
 
             target_boxes = self.processor.postprocess_target_batch(
