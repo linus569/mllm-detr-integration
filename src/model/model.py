@@ -168,7 +168,7 @@ class VisionLanguageModel(torch.nn.Module):
         self.image_token_index = image_token_index
 
         if self.config.detr_loss:
-            from transformers import DetrConfig
+            log.info("Using DETR loss")
 
             self.detr_model = DetrForObjectDetection.from_pretrained(
                 "facebook/detr-resnet-50", revision="no_timm"
@@ -181,6 +181,21 @@ class VisionLanguageModel(torch.nn.Module):
                 torch.nn.GELU(),
                 torch.nn.Linear(self.detr_config.d_model, self.detr_config.d_model),
             )
+
+            for param in self.input_projection.parameters():
+                assert (
+                    param.requires_grad == True
+                ), "Input projection parameters should be trainable"
+
+            for param in self.detr_model.class_labels_classifier.parameters():
+                assert (
+                    param.requires_grad == True
+                ), "DETR class_labels_classifier parameters should be trainable"
+
+            for param in self.detr_model.bbox_predictor.parameters():
+                assert (
+                    param.requires_grad == True
+                ), "DETR bbox_predictor parameters should be trainable"
 
         log.info("Model initialized")
 
