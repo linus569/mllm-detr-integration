@@ -176,8 +176,12 @@ class VisionLanguageModel(torch.nn.Module):
             self.detr_config = self.detr_model.config
             # currently shape (batch_size, mm_hidden_size, vocab_size)
             # project to shape (batch_size, mm_hidden_size, d_model)
+
+            # hidden_size = self.vocab_size # when using outputs[0], output from lm_head
+            hidden_size = self.model.config.hidden_size  # when using hidden states
+
             self.input_projection = torch.nn.Sequential(
-                torch.nn.Linear(self.vocab_size, self.detr_config.d_model),
+                torch.nn.Linear(hidden_size, self.detr_config.d_model),
                 torch.nn.GELU(),
                 torch.nn.Linear(self.detr_config.d_model, self.detr_config.d_model),
             )
@@ -420,8 +424,10 @@ class VisionLanguageModel(torch.nn.Module):
         return image_features
 
     def _use_detr_head(self, input_ids, outputs):
-        # get the last hidden state of the encoder
-        sequence_output = outputs[0]
+        # get the last hidden state or output from lm_head
+        # sequence_output = outputs[0]
+        sequence_output = outputs.hidden_states[-1]
+
         # get the last hidden state of the decoder
         # sequence_output = outputs[1][-1]
         # project to d_model size to match the classifier and predictor
@@ -494,6 +500,10 @@ class VisionLanguageModel(torch.nn.Module):
             inputs_embeds = inputs_embeds.masked_scatter(
                 special_image_mask, image_features
             )
+
+        # Hidden states needed for DETR loss
+        if self.config.detr_loss:
+            output_hidden_states = True
 
         # LLM forward pass
         outputs = self.model(
@@ -583,7 +593,7 @@ class VisionLanguageModel(torch.nn.Module):
                 inputs_embeds=inputs_embeds,
                 use_cache=None,
                 output_attentions=None,
-                output_hidden_states=None,
+                output_hidden_states=True,  # needed
                 return_dict=None,
             )
 
