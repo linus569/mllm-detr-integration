@@ -23,6 +23,7 @@ dependencies:
   - pandas
   - tqdm
   - wandb
+  - h5py
 
   - pip:
     - transformers
