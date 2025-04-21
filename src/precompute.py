@@ -47,13 +47,16 @@ def precompute_image_features(
         if dataset_name in f:
             del f[dataset_name]
 
+        chunk_size = min(config.batch_size * 2, 64)
+
         dset = f.create_dataset(
             dataset_name,
             (dataset_size,) + feature_dim,
             dtype=numpy_dtype, #TODO: dtype from numpy
-            compression="gzip",
-            compression_opts=9,
-            chunks=True,
+            compression="lzf",
+            #compression_opts=4,
+            chunks=(chunk_size,) + feature_dim,
+            fletcher32=True,
         )
 
         dset.attrs["shape"] = (dataset_size,) + feature_dim
@@ -80,7 +83,8 @@ def precompute_image_features(
             start_idx = end_idx
 
             del image_features
-            #torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     log.info("Precomputation completed.")
 
