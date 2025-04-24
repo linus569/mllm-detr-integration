@@ -10,10 +10,11 @@ from utils.config import ExperimentConfig
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import torch
+
 # fix graph breaks in detr loss
 torch._dynamo.config.capture_scalar_outputs = True
 # Set TensorFloat32 precision for better performance
-torch.set_float32_matmul_precision('high')
+torch.set_float32_matmul_precision("high")
 
 import hydra
 import numpy as np
@@ -124,14 +125,17 @@ class Trainer:
                 # Move batch to device # TODO: move this to model in own function
                 input_ids = batch["input_ids"].to(self.device)
                 attention_mask = batch["attention_mask"].to(self.device)
-                images = batch["images"].to(self.device)
                 labels = batch["labels"].to(self.device)
+                if self.config.use_precompute:
+                    images = batch["image_features"].to(self.device)
+                else:
+                    images = batch["images"].to(self.device)
                 if self.config.detr_loss:
                     labels = batch["detr_labels"]
                     for l in labels:
                         l["class_labels"] = l["class_labels"].to(self.device)
                         l["boxes"] = l["boxes"].to(self.device)
-                        
+
                 image_sizes = batch["image_sizes"]
 
                 if "fasterrcnn" in self.config.model_name:
@@ -303,11 +307,16 @@ class Trainer:
                 dtype=self.dtype,
                 enabled=self.config.use_amp,
             ):
+                if self.config.use_precompute:
+                    images = batch["image_features"].to(self.device)
+                else:
+                    images = batch["images"].to(self.device)
+
                 outputs = self.model.generate(
                     input_ids=batch["input_ids"].to(self.device),
                     attention_mask=batch["attention_mask"].to(self.device),
                     # not .to(device) as fasterrcnn returns list, done in model
-                    image=batch["images"],
+                    image=images,
                     stopping_criteria=[JSONStoppingCriteria(self.processor.tokenizer)],
                     do_sample=True,  # TODO: hardcoded to config
                     temperature=self.config.temperature,
@@ -320,7 +329,9 @@ class Trainer:
                 predicted_boxes = outputs
                 generated_text = None
             elif self.config.detr_loss:
-                predicted_boxes = self.processor.postprocess_detr_pred_batch(outputs, batch["image_sizes"])
+                predicted_boxes = self.processor.postprocess_detr_pred_batch(
+                    outputs, batch["image_sizes"]
+                )
                 generated_text = None
             else:
                 # Parse model ouput to bbox and lables

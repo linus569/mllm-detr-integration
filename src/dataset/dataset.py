@@ -57,6 +57,7 @@ class COCODataset(Dataset):
             ]
 
             return {
+                "id": idx,
                 "image": image,
                 "instance_classes_id": instance_classes_id,
                 "instance_classes_str": instance_classes_str,
@@ -73,6 +74,7 @@ class COCODataset(Dataset):
                 log.warning(f"Returning empty placeholder for idx {idx}")
                 dummy_image = Image.new("RGB", (384, 384), color="black")
                 return {
+                    "id": idx,
                     "image": dummy_image,
                     "instance_classes_id": [],
                     "instance_classes_str": [],

@@ -98,5 +98,11 @@ class ExperimentConfig:
 
     bbox_ordering: str = "none"  # Options: "none", "random", "size_desc"
 
+    # detr parameters
     num_query_tokens: int = 0
     detr_loss: bool = False
+
+    # precompute parameters
+    use_precompute: bool = False
+    precompute_path: Optional[str] = None
+    precompute_batch_size: Optional[int] = None

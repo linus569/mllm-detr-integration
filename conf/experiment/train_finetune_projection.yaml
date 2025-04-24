@@ -30,3 +30,8 @@ use_amp: true
 torch_dtype: 'bfloat16' #none, float16 #bfloat16 error when using *16 because grad_scale works with *32
 
 num_coordinate_bins: 100 #one for every pixel
+
+# precompute
+use_precompute: true # on eval double as fast on mac than without precompute
+precompute_path: 'precomputed_img_siglip_bs2_bfloat16.hdf5'
+precompute_batch_size: 2

@@ -304,20 +304,20 @@ class VisionLanguageModel(torch.nn.Module):
         if pixel_values.ndim == 5:  # If patches are used
             image_features = []
             for img in pixel_values:
-                # # Ensure correct channel order for each patch
-                # if img.shape[-1] == 3:  # If channels are last
-                #     img = img.permute(0, 3, 1, 2)
-                # image_features.append(self.image_encoder(img))
-                if encoder_name == "dinov2":
+                if "dinov2" in encoder_name:
                     outputs = self.image_encoder(img)
                     if self.config.image_encoder.use_pooler_output:
                         # Extract the [CLS] token representation (first token)
                         img_features = outputs.pooler_output.unsqueeze(1)
                     else:
+                        # Use last hidden state
                         img_features = outputs.last_hidden_state
-                else:
-                    # use siglip, already in correct format
+                elif "siglip" in encoder_name:
                     img_features = self.image_encoder(img)
+                else:
+                    raise ValueError(
+                        f"Image encoder {encoder_name} not yet supported for patches"
+                    )
                 image_features.append(img_features)
             # convert list to tensor
             image_features = torch.stack(image_features)
@@ -476,7 +476,12 @@ class VisionLanguageModel(torch.nn.Module):
             inputs_embeds = self.model.get_input_embeddings()(input_ids)
 
         if images is not None:
-            image_features = self._get_image_features(images, image_sizes)
+            if self.config.use_precompute:
+                # Project image features to token size
+                image_features = self.projector(images)
+            else:
+                image_features = self._get_image_features(images, image_sizes)
+
             # Integrate image features into token embeddings
             n_image_tokens = (input_ids == self.image_token_index).sum()
             n_image_features = image_features.shape[0] * image_features.shape[1]
@@ -493,9 +498,6 @@ class VisionLanguageModel(torch.nn.Module):
             special_image_mask = (input_ids == self.image_token_index).unsqueeze(-1)
             special_image_mask = special_image_mask.expand_as(inputs_embeds).to(
                 inputs_embeds.device
-            )
-            image_features = image_features.to(
-                inputs_embeds.device, inputs_embeds.dtype
             )
             inputs_embeds = inputs_embeds.masked_scatter(
                 special_image_mask, image_features
@@ -546,7 +548,7 @@ class VisionLanguageModel(torch.nn.Module):
             # TODO: return also image_hidden states?
         )
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def generate(
         self,
         input_ids,
@@ -560,8 +562,12 @@ class VisionLanguageModel(torch.nn.Module):
         if image is None:
             raise ValueError("Image needs to be provided for generation.")
 
-        # Image feature extraction
-        image_features = self._get_image_features(image, image_sizes)
+        if self.config.use_precompute:
+            # Project image features to token size
+            image_features = self.projector(image)
+        else:
+            # Image feature extraction
+            image_features = self._get_image_features(image, image_sizes)
 
         # Token embeddings
         embedding_layer = self.model.get_input_embeddings()
@@ -570,7 +576,6 @@ class VisionLanguageModel(torch.nn.Module):
         # Integrate image features into embeddings
         special_image_mask = (input_ids == self.image_token_index).unsqueeze(-1)
         special_image_mask = special_image_mask.expand_as(inputs_embeds)
-        image_features = image_features.to(inputs_embeds.device, inputs_embeds.dtype)
         inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)
 
         # Generate text

@@ -6,6 +6,7 @@ from functools import cached_property
 from typing import Dict, List, Tuple, Union
 
 import albumentations as A
+import h5py
 import numpy as np
 import torch
 from albumentations.pytorch import ToTensorV2
@@ -353,6 +354,8 @@ class Processor(ProcessorMixin):
         transformed_classes_id = [None] * batch_size
         text_inputs = [None] * batch_size
         bbox_str = [None] * batch_size
+        image_features = [None] * batch_size
+        images = None
 
         for i, sample in enumerate(batch):
             # Check if there are any boxes and if they are valid, if not remove them
@@ -442,9 +445,23 @@ class Processor(ProcessorMixin):
                 images[i, :, :h, :w] = img
 
         else:
-            # fixed_size images, stack tensors
-            images = torch.stack(transformed_images)
-            # image_sizes = None
+            if self.config.use_precompute:
+                with h5py.File(self.config.precompute_path, "r") as f:
+                    id = batch[0]["id"]
+
+                    if train:
+                        precomputed_img = f["precomputed_train_img"][
+                            id : id + batch_size
+                        ]
+                    else:
+                        precomputed_img = f["precomputed_val_img"][id : id + batch_size]
+                image_features = torch.from_numpy(precomputed_img).to(
+                    self.config.torch_dtype
+                )
+            else:
+                # fixed_size images, stack tensors
+                images = torch.stack(transformed_images)
+                # image_sizes = None
 
         # Store the original image sizes for proper feature map calculation
         image_sizes = [(img.shape[1], img.shape[2]) for img in transformed_images]
@@ -515,6 +532,7 @@ class Processor(ProcessorMixin):
             "images": images,
             "labels": labels,
             "detr_labels": detr_labels,
+            "image_features": image_features,
             # for evaluation purposes
             # TODO: put here "targets": self.postprocess_target_batch(...)
             "instance_bboxes": transformed_bboxes,

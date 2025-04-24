@@ -213,6 +213,8 @@ def run_script(config: ExperimentConfig):
     if not config.debug:
         model = torch.compile(model)  # 2.3 it/s without -> 4.5 it/s with
 
+    config.use_precompute = False # set to False to avoid loading already precomputed features 
+
     # build train_dataloader with is_train=False to avoid random sampling
     train_dataloader = build_dataloader(
         processor=processor,
