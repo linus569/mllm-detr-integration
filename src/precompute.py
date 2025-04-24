@@ -15,7 +15,11 @@ from tqdm import tqdm
 from dataset.processor import Processor
 from model.model import VisionLanguageModel
 from utils.config import DatasetConfig, ExperimentConfig
-from utils.train_utils import build_train_dataloader, build_val_dataloader
+from utils.train_utils import (
+    build_dataloader,
+    build_train_dataloader,
+    build_val_dataloader,
+)
 
 log = logging.getLogger(__name__)
 
@@ -39,24 +43,24 @@ def precompute_image_features(
     ).shape[1:]
 
     dataset_size = len(dataloader.dataset)
-    #numpy_dtype = torch.empty(0, dtype=torch_dtype).numpy().dtype
+    # numpy_dtype = torch.empty(0, dtype=torch_dtype).numpy().dtype
 
     # precomputed_feat = torch.zeros(
     #     (len(dataloader.dataset),) + feature_dim, dtype=sample_batch["images"].dtype
     # )
     # log.info(f"Precomputed feature shape: {precomputed_feat.shape}")
-    with h5py.File(output_path, "w") as f:
+    with h5py.File(output_path, "a") as f:
         if dataset_name in f:
             del f[dataset_name]
 
-        chunk_size = 2#config.batch_size # should be batch_size of training
+        chunk_size = 2  # config.batch_size # should be batch_size of training
 
         dset = f.create_dataset(
             dataset_name,
             (dataset_size,) + feature_dim,
-            #dtype=numpy_dtype,
+            # dtype=numpy_dtype,
             compression="lzf",
-            #compression_opts=4,
+            # compression_opts=4,
             chunks=(chunk_size,) + feature_dim,
             fletcher32=True,
         )
@@ -82,7 +86,6 @@ def precompute_image_features(
                 enabled=config.use_amp,
             ):
                 # Move images to the correct device and dtype
-
                 images = batch["images"].to(config.device, dtype=torch_dtype)
                 batch_size = images.shape[0]
 
@@ -210,35 +213,40 @@ def run_script(config: ExperimentConfig):
     if not config.debug:
         model = torch.compile(model)  # 2.3 it/s without -> 4.5 it/s with
 
-    train_dataloader = build_train_dataloader(
-        config=config,
+    # build train_dataloader with is_train=False to avoid random sampling
+    train_dataloader = build_dataloader(
         processor=processor,
-        subset_size=config.num_samples,
+        dataset_config=config.train_dataset,
+        is_train=False,
+        batch_size=config.batch_size,
+        num_workers=config.num_workers,
+        load_precomputed_embeddings=False,
+        subset_size=None,
+        use_random_subset=True,
     )
+
     val_dataloader = build_val_dataloader(
         config=config,
         processor=processor,
-        subset_size=config.val_num_samples,
+        # subset_size=config.val_num_samples,
     )
- 
-    output_file = "precomputed_img.hdf5"
-    precompute_image_features(config, model, train_dataloader, output_path=output_file, dataset_name="precomputed_train_img")
-    precompute_image_features(config, model, val_dataloader, output_path=output_file, dataset_name="precomputed_val_img")
-    
 
-    # with h5py.File("mytestfile.hdf5", "w") as f:
-    #     dset_train = f.create_dataset(
-    #         "precomputed_train_img",
-    #         data=precomputed_train_img,
-    #         compression="gzip",
-    #         compression_opts=9,
-    #     )
-    #     dset_val = f.create_dataset(
-    #         "precomputed_val_img",
-    #         data=precomputed_val_img,
-    #         compression="gzip",
-    #         compression_opts=9,
-    #     )
+    output_file = "precomputed_img_siglip_bs2_bfloat16.hdf5"
+    precompute_image_features(
+        config,
+        model,
+        train_dataloader,
+        output_path=output_file,
+        dataset_name="precomputed_train_img",
+    )
+    precompute_image_features(
+        config,
+        model,
+        val_dataloader,
+        output_path=output_file,
+        dataset_name="precomputed_val_img",
+    )
+
     log.info("Precomputed image features saved to mytestfile.hdf5")
 
     # validate_precomputed_features(
@@ -252,18 +260,13 @@ if __name__ == "__main__":
     cs = ConfigStore.instance()
     cs.store(name="ExperimentConfig", node=ExperimentConfig)
     cs.store(name="DatasetConfig", group="dataset", node=DatasetConfig)
-    # OmegaConf.register_new_resolver("models_dir", lambda: MODELS_DIR)
+
     OmegaConf.register_new_resolver(
         "ifel", lambda flag, val_true, val_false: val_true if flag else val_false
     )
-    # OmegaConf.register_new_resolver("project_dir", lambda: PROJECT_DIR)
-
-    # import model
-    # from model import img_encoder, txt_encoder, txt_decoder, detector
-    # ModelRegistry.init_registries([model, img_encoder, txt_encoder, txt_decoder, detector])
 
     run_script()
 
 # 131 debug
 # 179 no debug
-#60s no debug mps device
+# 60s no debug mps device
