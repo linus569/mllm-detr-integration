@@ -30,14 +30,16 @@ def precompute_image_features(
 ):
     log.info("Precompute script is running")
 
+    # Use torch_dtype from config
+    torch_dtype = getattr(torch, config.torch_dtype, torch.float32)
+
     sample_batch = next(iter(dataloader))
     feature_dim = model.image_encoder(
-        sample_batch["images"].to(config.device)
+        sample_batch["images"].to(config.device, dtype=torch_dtype)
     ).shape[1:]
-    # log.info(f"Feature dimension: {feature_dim}")
 
     dataset_size = len(dataloader.dataset)
-    numpy_dtype = sample_batch["images"].cpu().numpy().dtype
+    #numpy_dtype = torch.empty(0, dtype=torch_dtype).numpy().dtype
 
     # precomputed_feat = torch.zeros(
     #     (len(dataloader.dataset),) + feature_dim, dtype=sample_batch["images"].dtype
@@ -47,12 +49,12 @@ def precompute_image_features(
         if dataset_name in f:
             del f[dataset_name]
 
-        chunk_size = min(config.batch_size * 2, 64)
+        chunk_size = 2#config.batch_size # should be batch_size of training
 
         dset = f.create_dataset(
             dataset_name,
             (dataset_size,) + feature_dim,
-            dtype=numpy_dtype, #TODO: dtype from numpy
+            #dtype=numpy_dtype,
             compression="lzf",
             #compression_opts=4,
             chunks=(chunk_size,) + feature_dim,
@@ -73,13 +75,21 @@ def precompute_image_features(
 
         start_idx = 0
         for batch in dataloader_tqdm:
-            images = batch["images"]#to(config.device)
-            batch_size = images.shape[0]
+            # mixed precision
+            with torch.autocast(
+                device_type=config.device,
+                dtype=torch_dtype,
+                enabled=config.use_amp,
+            ):
+                # Move images to the correct device and dtype
 
-            image_features = model.image_encoder(images)
+                images = batch["images"].to(config.device, dtype=torch_dtype)
+                batch_size = images.shape[0]
+
+                image_features = model.image_encoder(images)
 
             end_idx = start_idx + batch_size
-            dset[start_idx:end_idx] = image_features.cpu()
+            dset[start_idx:end_idx] = image_features.to(torch.float32).cpu()
             start_idx = end_idx
 
             del image_features
@@ -194,6 +204,8 @@ def run_script(config: ExperimentConfig):
             else None
         ),
     ).to(device)
+
+    del model.model
 
     if not config.debug:
         model = torch.compile(model)  # 2.3 it/s without -> 4.5 it/s with
