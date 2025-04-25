@@ -170,36 +170,47 @@ class VisionLanguageModel(torch.nn.Module):
         if self.config.detr_loss:
             log.info("Using DETR loss")
 
-            self.detr_model = DetrForObjectDetection.from_pretrained(
+            detr_model = DetrForObjectDetection.from_pretrained(
                 "facebook/detr-resnet-50", revision="no_timm"
             )
-            self.detr_config = self.detr_model.config
+
+            self.detr_class_labels_classifier = detr_model.class_labels_classifier
+            self.detr_bbox_predictor = detr_model.bbox_predictor
+            self.detr_config = detr_model.config
+
             # currently shape (batch_size, mm_hidden_size, vocab_size)
             # project to shape (batch_size, mm_hidden_size, d_model)
 
             # hidden_size = self.vocab_size # when using outputs[0], output from lm_head
             hidden_size = self.model.config.hidden_size  # when using hidden states
 
-            self.input_projection = torch.nn.Sequential(
+            self.detr_input_projection = torch.nn.Sequential(
                 torch.nn.Linear(hidden_size, self.detr_config.d_model),
                 torch.nn.GELU(),
                 torch.nn.Linear(self.detr_config.d_model, self.detr_config.d_model),
             )
 
-            for param in self.input_projection.parameters():
+            for param in self.detr_input_projection.parameters():
                 assert (
                     param.requires_grad == True
                 ), "Input projection parameters should be trainable"
 
-            for param in self.detr_model.class_labels_classifier.parameters():
+            for param in self.detr_class_labels_classifier.parameters():
                 assert (
                     param.requires_grad == True
                 ), "DETR class_labels_classifier parameters should be trainable"
 
-            for param in self.detr_model.bbox_predictor.parameters():
+            for param in self.detr_bbox_predictor.parameters():
                 assert (
                     param.requires_grad == True
                 ), "DETR bbox_predictor parameters should be trainable"
+
+        if self.config.use_precompute:
+            # delete image encoder and projector
+            # TODO: delete self.model.model.vision_tower also during normal runs as I use self.image_encoder
+            del self.image_encoder
+            del self.model.model.vision_tower
+            del self.model.model.vision_resampler
 
         log.info("Model initialized")
 
@@ -441,10 +452,10 @@ class VisionLanguageModel(torch.nn.Module):
                 ].unsqueeze(0)
             )
         sequence_output_queries = torch.cat(sequence_output_queries, dim=0)
-        sequence_output = self.input_projection(sequence_output_queries)
+        sequence_output = self.detr_input_projection(sequence_output_queries)
 
-        logits = self.detr_model.class_labels_classifier(sequence_output)
-        pred_boxes = self.detr_model.bbox_predictor(sequence_output).sigmoid()
+        logits = self.detr_class_labels_classifier(sequence_output)
+        pred_boxes = self.detr_bbox_predictor(sequence_output).sigmoid()
 
         return logits, pred_boxes
 
@@ -479,6 +490,7 @@ class VisionLanguageModel(torch.nn.Module):
             if self.config.use_precompute:
                 # Project image features to token size
                 image_features = self.projector(images)
+                image_features = image_features.to(self.model.device, self.model.dtype)
             else:
                 image_features = self._get_image_features(images, image_sizes)
 
@@ -565,6 +577,7 @@ class VisionLanguageModel(torch.nn.Module):
         if self.config.use_precompute:
             # Project image features to token size
             image_features = self.projector(image)
+            image_features = image_features.to(self.model.device, self.model.dtype)
         else:
             # Image feature extraction
             image_features = self._get_image_features(image, image_sizes)

@@ -455,9 +455,7 @@ class Processor(ProcessorMixin):
                         ]
                     else:
                         precomputed_img = f["precomputed_val_img"][id : id + batch_size]
-                image_features = torch.from_numpy(precomputed_img).to(
-                    self.config.torch_dtype
-                )
+                image_features = torch.from_numpy(precomputed_img)
             else:
                 # fixed_size images, stack tensors
                 images = torch.stack(transformed_images)
