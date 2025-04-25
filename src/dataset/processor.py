@@ -447,12 +447,20 @@ class Processor(ProcessorMixin):
         else:
             if self.config.use_precompute:
                 with h5py.File(self.config.precompute_path, "r") as f:
-                    ids = [e['id'] for e in batch]
+                    ids = [e["id"] for e in batch]
 
-                    if train:
-                        precomputed_img = f["precomputed_train_img"][ids]
-                    else:
-                        precomputed_img = f["precomputed_val_img"][ids]
+                    shape = f["precomputed_train_img"].attrs["shape"][1:]
+                    precomputed_img = np.zeros(
+                        (batch_size,) + tuple(shape), dtype=np.float32
+                    )
+                    for i, id in enumerate(ids):
+                        if train:
+                            print(f["precomputed_train_img"][id].shape)
+                            precomputed_img[i] = f["precomputed_train_img"][id]
+                        else:
+                            print(f["precomputed_val_img"][id].shape)
+                            precomputed_img[i] = f["precomputed_val_img"][id]
+
                 image_features = torch.from_numpy(precomputed_img)
             else:
                 # fixed_size images, stack tensors
