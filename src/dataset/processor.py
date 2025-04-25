@@ -447,14 +447,12 @@ class Processor(ProcessorMixin):
         else:
             if self.config.use_precompute:
                 with h5py.File(self.config.precompute_path, "r") as f:
-                    id = batch[0]["id"]
+                    ids = [e['id'] for e in batch]
 
                     if train:
-                        precomputed_img = f["precomputed_train_img"][
-                            id : id + batch_size
-                        ]
+                        precomputed_img = f["precomputed_train_img"][ids]
                     else:
-                        precomputed_img = f["precomputed_val_img"][id : id + batch_size]
+                        precomputed_img = f["precomputed_val_img"][ids]
                 image_features = torch.from_numpy(precomputed_img)
             else:
                 # fixed_size images, stack tensors
