@@ -186,6 +186,8 @@ def run_script(config: ExperimentConfig):
 
     assert config.image_encoder.name == "siglip", "Only siglip is supported for now"
 
+    config.use_precompute = False # set to False to avoid loading already precomputed features 
+
     processor = Processor.from_config(
         config, add_special_tokens=config.add_special_tokens
     )

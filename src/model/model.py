@@ -118,13 +118,13 @@ class VisionLanguageModel(torch.nn.Module):
         if embedding_size != tokenizer_size:
             log.warning(
                 f"Tokenizer vocab size {tokenizer_size} does not match model vocab size {embedding_size}. "
-                "Resizing embeddings to match tokenizer size."
+                "Resizing model embeddings to match tokenizer size."
             )
             # Resize token embeddings
             self.model.resize_token_embeddings(tokenizer_size)
-            log.warning(
-                f"Model embeddings resized to {self.model.get_input_embeddings().num_embeddings}"
-            )
+            assert (
+                self.model.get_input_embeddings().num_embeddings == tokenizer_size
+            ), f"Model vocab size {self.model.get_input_embeddings().num_embeddings} does not match tokenizer size {tokenizer_size} after resizing."
 
         # Initialize new token embeddings
         self.model.set_input_embeddings(
@@ -145,23 +145,12 @@ class VisionLanguageModel(torch.nn.Module):
         )
 
         log.info(
-            f"frozen input embed: {self.model.get_input_embeddings().frozen_embedding}"
-        )
-        log.info(
-            f"trainable input embed: {self.model.get_input_embeddings().trainable_embedding}"
-        )
-        log.info(
-            f"full input embed size: {self.model.get_input_embeddings().num_embeddings}"
-        )
-
-        log.info(
-            f"frozen output embed: {self.model.get_output_embeddings().frozen_lm_head}"
-        )
-        log.info(
-            f"trainable output embed: {self.model.get_output_embeddings().trainable_lm_head}"
-        )
-        log.info(
-            f"full output embed size: {self.model.get_output_embeddings().out_features}"
+            f"frozen input embed: {self.model.get_input_embeddings().frozen_embedding}, "
+            f"trainable input embed: {self.model.get_input_embeddings().trainable_embedding}, "
+            f"full input embed size: {self.model.get_input_embeddings().num_embeddings}, "
+            f"frozen output embed: {self.model.get_output_embeddings().frozen_lm_head}, "
+            f"trainable output embed: {self.model.get_output_embeddings().trainable_lm_head}, "
+            f"full output embed size: {self.model.get_output_embeddings().out_features};"
         )
 
         self.vocab_size = self.model.get_input_embeddings().num_embeddings
@@ -204,6 +193,11 @@ class VisionLanguageModel(torch.nn.Module):
                 assert (
                     param.requires_grad == True
                 ), "DETR bbox_predictor parameters should be trainable"
+
+            if self.config.bbox_ordering == "size_desc":
+                log.warning(
+                    "Bbox ordering is set to size_desc - DETR loss will be using size based matching instead of hungarian matching."
+                )
 
         if self.config.use_precompute:
             # delete image encoder and projector
@@ -537,6 +531,7 @@ class VisionLanguageModel(torch.nn.Module):
                 logits, pred_boxes = self._use_detr_head(input_ids, outputs)
 
                 outputs_class = outputs_coord = None  # used only with auxiliary outputs
+
                 loss = detr_loss(
                     logits=logits,
                     labels=labels,
@@ -545,6 +540,7 @@ class VisionLanguageModel(torch.nn.Module):
                     config=self.detr_config,
                     outputs_class=outputs_class,
                     outputs_coord=outputs_coord,
+                    sized_based_matching=self.config.bbox_ordering == "size_desc",
                 )
             else:
                 loss = masked_cross_entropy(
