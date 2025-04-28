@@ -58,8 +58,8 @@ class SizeBasedMatcher(nn.Module):
                 # No targets, return empty matching
                 results.append(
                     (
-                        torch.tensor([], dtype=torch.int64),
-                        torch.tensor([], dtype=torch.int64),
+                        torch.tensor([], dtype=torch.int64, device=pred_boxes.device),
+                        torch.tensor([], dtype=torch.int64, device=pred_boxes.device),
                     )
                 )
                 continue
