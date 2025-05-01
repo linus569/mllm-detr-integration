@@ -162,10 +162,15 @@ class VisionLanguageModel(torch.nn.Module):
             detr_model = DetrForObjectDetection.from_pretrained(
                 "facebook/detr-resnet-50", revision="no_timm"
             )
+            self.detr_model = detr_model
 
             self.detr_class_labels_classifier = detr_model.class_labels_classifier
             self.detr_bbox_predictor = detr_model.bbox_predictor
             self.detr_config = detr_model.config
+
+            # create detr layers that I will use on the hidden states 
+            self.detr_decoder = detr_model.model.decoder
+            self.detr_encoder = detr_model.model.encoder
 
             # currently shape (batch_size, mm_hidden_size, vocab_size)
             # project to shape (batch_size, mm_hidden_size, d_model)
@@ -446,12 +451,79 @@ class VisionLanguageModel(torch.nn.Module):
                 ].unsqueeze(0)
             )
         sequence_output_queries = torch.cat(sequence_output_queries, dim=0)
-        sequence_output = self.detr_input_projection(sequence_output_queries)
+        projected_queries = self.detr_input_projection(sequence_output_queries)
 
-        logits = self.detr_class_labels_classifier(sequence_output)
-        pred_boxes = self.detr_bbox_predictor(sequence_output).sigmoid()
+        if not self.config.add_detr_layers:
+            logits = self.detr_class_labels_classifier(projected_queries)
+            pred_boxes = self.detr_bbox_predictor(projected_queries).sigmoid()
 
-        return logits, pred_boxes
+            return logits, pred_boxes
+        else: 
+            # print(self.detr_config)
+            # decoder_outputs = self.detr_decoder(
+            #     inputs_embeds=projected_queries,
+            #     attention_mask=None,
+            #     object_queries=object_queries,
+            #     query_position_embeddings=query_position_embeddings,
+            #     encoder_hidden_states=encoder_outputs[0],
+            #     encoder_attention_mask=flattened_mask,
+            #     output_attentions=output_attentions,
+            #     output_hidden_states=output_hidden_states,
+            #     return_dict=return_dict,
+            # )
+        
+            dummy_encoder_features = torch.zeros(
+                self.config.batch_size,
+                self.config.num_query_tokens,  # Arbitrary sequence length for encoder features
+                self.detr_config.d_model,
+                device=projected_queries.device,
+                dtype=projected_queries.dtype
+            )
+            
+            # Create a mask for the encoder outputs - all 1s means attend to all positions
+            encoder_attention_mask = torch.ones(
+                self.config.batch_size,
+                self.config.num_query_tokens,
+                device=projected_queries.device,
+                dtype=torch.bool
+            )
+            
+            # Create position embeddings for the query tokens
+            query_position_embeddings = self.detr_model.model.query_position_embeddings.weight.unsqueeze(0).repeat(
+                self.config.batch_size, 1, 1
+            )[:, :self.config.num_query_tokens, :]
+
+            object_queries = torch.zeros(
+                self.config.batch_size,
+                self.config.num_query_tokens,
+                self.detr_config.d_model,
+                device=projected_queries.device,
+                dtype=projected_queries.dtype
+            )
+            
+            # Run the decoder
+            decoder_outputs = self.detr_decoder(
+                inputs_embeds=projected_queries,  # Query embeddings from LLM
+                attention_mask=None,  # No masking needed for queries
+                encoder_hidden_states=dummy_encoder_features,  # Cross-attention features
+                encoder_attention_mask=encoder_attention_mask,  # Cross-attention mask
+                object_queries=object_queries,  # No object queries needed
+                query_position_embeddings=query_position_embeddings,  # Position embeddings for self-attention
+                output_attentions=False,
+                output_hidden_states=False,
+                return_dict=False
+            )
+            
+            # Get decoder output (tuple with hidden states as first element)
+            decoder_output = decoder_outputs[0]
+            
+            # Apply classification and box regression heads
+            logits = self.detr_class_labels_classifier(decoder_output)
+            pred_boxes = self.detr_bbox_predictor(decoder_output).sigmoid()
+            
+            return logits, pred_boxes
+
+
 
     def forward(
         self,
