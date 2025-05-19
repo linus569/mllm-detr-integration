@@ -2,7 +2,11 @@ import logging
 from typing import List, Optional, Tuple
 
 import torch
-from transformers import DetrForObjectDetection
+from transformers import (
+    DabDetrConfig,
+    DabDetrForObjectDetection,
+    DetrForObjectDetection,
+)
 
 from utils.config import ExperimentConfig
 
@@ -38,11 +42,6 @@ class DETRIntegration(torch.nn.Module):
         self.device = device
         self.batch_size = batch_size
 
-        # DabDETR model
-        # detr_model = DetrForObjectDetection.from_pretrained(
-        #     "IDEA-Research/dab-detr-resnet-50"
-        # )
-
         # Load DETR model
         detr_model = DetrForObjectDetection.from_pretrained(
             "facebook/detr-resnet-50", revision="no_timm"
@@ -56,7 +55,7 @@ class DETRIntegration(torch.nn.Module):
         self.decoder = detr_model.model.decoder
         self.encoder = detr_model.model.encoder
 
-        self.query_position_weight = detr_model.model.query_position_embeddings.weight.clone().to(device)
+        self.query_position_embeddings = detr_model.model.query_position_embeddings
 
         # currently shape (batch_size, mm_hidden_size, vocab_size)
         # project to shape (batch_size, mm_hidden_size, d_model)
@@ -139,9 +138,9 @@ class DETRIntegration(torch.nn.Module):
             )
 
             # Get position embeddings
-            query_position_embeddings = self.query_position_weight.unsqueeze(0).repeat(
-                self.batch_size, 1, 1
-            )[:, :num_query_tokens, :]
+            query_position_embeddings = self.query_position_embeddings.weight.unsqueeze(
+                0
+            ).repeat(self.batch_size, 1, 1)[:, :num_query_tokens, :]
 
             # Create object queries
             # added to queries and keys in each cross-attention layer
