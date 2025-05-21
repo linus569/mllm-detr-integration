@@ -38,7 +38,7 @@ precompute_batch_size: 2
 
 # stage 1
 bbox_ordering: none
-freeze_model: true
+freeze_model: false
 detr_loss: True
 num_query_tokens: 20
 add_detr_layers: true

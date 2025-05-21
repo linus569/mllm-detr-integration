@@ -162,7 +162,7 @@ class VisionLanguageModel(torch.nn.Module):
         log.info("Model initialized")
 
     def state_dict(self, destination=None, prefix="", keep_vars=False):
-        log.info("Reading state dict")
+        log.info("Reading state dict from model")
 
         destination = destination or {}
 
@@ -182,15 +182,12 @@ class VisionLanguageModel(torch.nn.Module):
             keep_vars=keep_vars,
         )
 
-        # Add full model state dict if not frozen
-        # TODO: maybe change to always return full if training in stages
-        if not self.config.freeze_model:
-            # add model state dict to the output
-            self.model.state_dict(
-                destination=destination,
-                prefix=prefix + "llm.",
-                keep_vars=keep_vars,
-            )
+        # Add llm state dict
+        self.model.state_dict(
+            destination=destination,
+            prefix=prefix + "llm.",
+            keep_vars=keep_vars,
+        )
 
         if self.config.detr_loss:
             self.detr_integration.state_dict(
@@ -202,7 +199,7 @@ class VisionLanguageModel(torch.nn.Module):
         return destination
 
     def load_state_dict(self, state_dict, strict=True):
-        log.info("Loading state dict")
+        log.info("Loading state dict into model")
         missing_keys = []
         unexpected_keys = []
 
@@ -243,7 +240,10 @@ class VisionLanguageModel(torch.nn.Module):
                 missing_keys.extend(m)
                 unexpected_keys.extend(u)
 
-            # print(missing_keys, unexpected_keys)
+            # Normal behaviour: Missing keys: ['model.embed_tokens.frozen_embedding.weight', 'model.embed_tokens.trainable_embedding.weight',
+            # 'lm_head.frozen_lm_head.weight', 'lm_head.trainable_lm_head.weight'],
+            # Unexpected keys: ['model.embed_tokens.weight', 'lm_head.weight']
+            # Loading embed tokens and lm_head extra with input and output embeddings
 
         return missing_keys, unexpected_keys
 
