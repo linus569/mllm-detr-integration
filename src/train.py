@@ -117,6 +117,8 @@ class Trainer:
             leave=False,
         )
 
+        self.model.train()
+
         # Train loop
         for epoch in range(num_epochs):
             progress_bar.set_description(f"Train/Epoch {epoch+1}/{num_epochs}")

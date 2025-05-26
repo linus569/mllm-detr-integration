@@ -5,6 +5,7 @@ import torch
 from transformers import (
     DabDetrConfig,
     DabDetrForObjectDetection,
+    DetrConfig,
     DetrForObjectDetection,
 )
 
@@ -42,10 +43,17 @@ class DETRIntegration(torch.nn.Module):
         self.device = device
         self.batch_size = batch_size
 
-        # Load DETR model
-        detr_model = DetrForObjectDetection.from_pretrained(
+        # Load pretrained DETR model
+        # detr_model = DetrForObjectDetection.from_pretrained(
+        #     "facebook/detr-resnet-50", revision="no_timm"
+        # )
+
+        # Use DetrConfig to create a new configuration with custom num_queries
+        self.detr_config = DetrConfig.from_pretrained(
             "facebook/detr-resnet-50", revision="no_timm"
         )
+        self.detr_config.num_queries = config.num_query_tokens
+        detr_model = DetrForObjectDetection(config=self.detr_config)
 
         self.class_labels_classifier = detr_model.class_labels_classifier
         self.bbox_predictor = detr_model.bbox_predictor

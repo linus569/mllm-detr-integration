@@ -143,7 +143,7 @@ class VisionLanguageModel(torch.nn.Module):
 
         if self.config.detr_loss:
             log.info("Using DETR loss")
-            self.detr_integration = DETRIntegration(
+            self.detr_integration = DETRIntegration(  # TODO: switch between DETR and DabDETR
                 config=self.config,
                 # llm_hidden_size=self.vocab_size when using lm_head and not last hidden states
                 llm_hidden_size=self.model.config.hidden_size,
@@ -164,39 +164,44 @@ class VisionLanguageModel(torch.nn.Module):
     def state_dict(self, destination=None, prefix="", keep_vars=False):
         log.info("Reading state dict from model")
 
-        destination = destination or {}
-
-        self.projector.state_dict(
+        proj_state_dict = self.projector.state_dict(
             destination=destination,
             prefix=prefix + "projector.",
             keep_vars=keep_vars,
         )
-        self.model.get_input_embeddings().state_dict(
+        input_emb_state_dict = self.model.get_input_embeddings().state_dict(
             destination=destination,
             prefix=prefix + "input_embeddings.",
             keep_vars=keep_vars,
         )
-        self.model.get_output_embeddings().state_dict(
+        output_emb_state_dict = self.model.get_output_embeddings().state_dict(
             destination=destination,
             prefix=prefix + "output_embeddings.",
             keep_vars=keep_vars,
         )
 
         # Add llm state dict
-        self.model.state_dict(
+        model_state_dict = self.model.state_dict(
             destination=destination,
             prefix=prefix + "llm.",
             keep_vars=keep_vars,
         )
 
+        detr_int_state_dict = {}
         if self.config.detr_loss:
-            self.detr_integration.state_dict(
+            detr_int_state_dict = self.detr_integration.state_dict(
                 destination=destination,
                 prefix=prefix + "detr_integration.",
                 keep_vars=keep_vars,
             )
 
-        return destination
+        return {
+            **proj_state_dict,
+            **input_emb_state_dict,
+            **output_emb_state_dict,
+            **model_state_dict,
+            **detr_int_state_dict,
+        }
 
     def load_state_dict(self, state_dict, strict=True):
         log.info("Loading state dict into model")
