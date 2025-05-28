@@ -99,6 +99,7 @@ class ExperimentConfig:
     bbox_ordering: str = "none"  # Options: "none", "random", "size_desc"
 
     # detr parameters
+    detr_type: str = "detr"  # Options: "detr", "dabdetr"
     num_query_tokens: int = 0
     detr_loss: bool = False
     add_detr_layers: bool = False

@@ -6,14 +6,14 @@ from llava.model.language_model.llava_qwen import LlavaQwenForCausalLM
 from transformers import AutoModel, DetrForObjectDetection
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
-from model.detr_integration import DETRIntegration
+from model.detr_integration import DabDETRIntegration, DETRIntegration
 from model.image_encoder import (
     BaseImageEncoder,
     DinoV2ImageEncoder,
     Resnet50ImageEncoder,
     SiglipImageEncoder,
 )
-from model.loss import detr_loss, masked_cross_entropy
+from model.loss import masked_cross_entropy
 from model.partial_frozen_embeddings import (
     PartiallyFrozenEmbedding,
     PartiallyFrozenLMHead,
@@ -27,6 +27,11 @@ dict_image_encoders = {
     "siglip": SiglipImageEncoder,
     "resnet50": Resnet50ImageEncoder,
     "resnet50_encoder": Resnet50ImageEncoder,
+}
+
+dict_detr_module = {
+    "detr": DETRIntegration,
+    "dabdetr": DabDETRIntegration,
 }
 
 
@@ -143,7 +148,9 @@ class VisionLanguageModel(torch.nn.Module):
 
         if self.config.detr_loss:
             log.info("Using DETR loss")
-            self.detr_integration = DETRIntegration(  # TODO: switch between DETR and DabDETR
+            self.detr_integration = dict_detr_module.get(
+                config.detr_type
+            )(  # TODO: switch between DETR and DabDETR
                 config=self.config,
                 # llm_hidden_size=self.vocab_size when using lm_head and not last hidden states
                 llm_hidden_size=self.model.config.hidden_size,
@@ -389,17 +396,10 @@ class VisionLanguageModel(torch.nn.Module):
                     input_ids, outputs, image_features_detr
                 )
 
-                outputs_class = outputs_coord = None  # used only with auxiliary outputs
-
-                loss = detr_loss(
+                loss = self.detr_integration.loss(
                     logits=logits,
                     labels=labels,
-                    device=self.config.device,
                     pred_boxes=pred_boxes,
-                    config=self.detr_integration.detr_config,
-                    outputs_class=outputs_class,
-                    outputs_coord=outputs_coord,
-                    sized_based_matching=self.config.bbox_ordering == "size_desc",
                 )
             else:
                 loss = masked_cross_entropy(

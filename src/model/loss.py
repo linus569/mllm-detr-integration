@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from transformers.loss.loss_deformable_detr import DeformableDetrForObjectDetectionLoss
 from transformers.loss.loss_for_object_detection import (
     ForObjectDetectionLoss,
     ImageLoss,
@@ -157,6 +158,45 @@ def detr_loss(
             **kwargs,
         )
         return loss  # loss_dict
+
+
+def dab_detr_loss(
+    logits,
+    labels,
+    device,
+    pred_boxes,
+    config,
+    outputs_class=None,
+    outputs_coord=None,
+    **kwargs,
+):
+    """
+    Compute the loss for DAB-DETR model.
+
+    Args:
+        logits: Model logits
+        labels: Target labels
+        device: Device to use
+        pred_boxes: Predicted bounding boxes
+        config: Configuration object
+        outputs_class: Class outputs (optional)
+        outputs_coord: Coordinate outputs (optional)
+        **kwargs: Additional arguments
+
+    Returns:
+        The computed loss
+    """
+    loss, loss_dict, auxiliary_outputs = DeformableDetrForObjectDetectionLoss(
+        logits,
+        labels,
+        device,
+        pred_boxes,
+        config,
+        outputs_class,
+        outputs_coord,
+        **kwargs,
+    )
+    return loss
 
 
 # currently same as in transformers.loss.loss_utils
