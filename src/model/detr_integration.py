@@ -8,7 +8,7 @@ from transformers import (
     DetrConfig,
     DetrForObjectDetection,
 )
-from transformers.models.dab_detr.modeling_dab_detr import inverse_sigmoid
+from transformers.models.dab_detr.modeling_dab_detr import inverse_sigmoid, DabDetrSinePositionEmbedding
 
 from model.loss import dab_detr_loss, detr_loss
 from utils.config import ExperimentConfig
@@ -261,6 +261,8 @@ class DabDETRIntegration(torch.nn.Module):
         self.decoder = detr_model.model.decoder
         self.encoder = detr_model.model.encoder
 
+        self.position_embedding = DabDetrSinePositionEmbedding(self.detr_config)
+
         # self.query_refpoint_embeddings = detr_model.model.query_refpoint_embeddings
 
         self.query_refpoint_embeddings = torch.nn.Embedding(
@@ -347,7 +349,7 @@ class DabDETRIntegration(torch.nn.Module):
             encoder_attention_mask = torch.ones(
                 image_features.shape[0],
                 image_features.shape[1],
-                device=projected_queries.device,
+                device=self.config.device,
                 dtype=torch.bool,
             )
 
@@ -357,34 +359,88 @@ class DabDETRIntegration(torch.nn.Module):
                     self.batch_size, 1, 1
                 )
             )
-            # reference_position_embeddings = reference_position_embeddings.repeat(
-            #     1, self.detr_config.num_patterns, 1
-            # )[:, :num_query_tokens, :]
-
-            # reference_position_embeddings = self.query_refpoint_embeddings.weight.unsqueeze(0).repeat(batch_size, 1, 1)
 
             # Create object queries
             # added to queries and keys in each cross-attention layer
-            object_queries = torch.zeros(
-                image_features.shape[0],
-                image_features.shape[1],  # Match the sequence length of image_features
-                image_features.shape[2],  # Match the feature dimension
-                device=projected_queries.device,
-                dtype=projected_queries.dtype,
-            )
-
-            # Run decoder
-            # decoder_outputs = self.decoder(
-            #     inputs_embeds=projected_queries,  # Query embeddings from LLM
-            #     attention_mask=None,  # No attention mask for queries
-            #     encoder_hidden_states=image_features,  # Cross-attention features (siglip)
-            #     encoder_attention_mask=encoder_attention_mask,  # Cross-attention mask
-            #     object_queries=object_queries,  # Object queries (zeros)
-            #     query_position_embeddings=query_position_embeddings,  # Position embeddings for self-attention
-            #     output_attentions=False,
-            #     output_hidden_states=False,
-            #     return_dict=False,
+            # object_queries = torch.zeros(
+            #     image_features.shape[0],
+            #     image_features.shape[1],  # Match the sequence length of image_features
+            #     image_features.shape[2],  # Match the feature dimension
+            #     device=self.query_refpoint_embeddings.device,
+            #     dtype=self.query_refpoint_embeddings.dtype,
             # )
+                        # Generate object queries with spatial information for SIGLIP features
+            # # Convert SIGLIP features to a spatial representation
+            # batch_size, seq_len, hidden_dim = image_features.shape
+            
+            # # Calculate approximate spatial dimensions (assuming square feature map)
+            # feature_map_size = int(seq_len**0.5)
+            
+            # # Create 2D position embeddings
+            # y_embed = torch.arange(feature_map_size, device=image_features.device).float()
+            # x_embed = torch.arange(feature_map_size, device=image_features.device).float()
+            
+            # # Normalize to [0, 1]
+            # y_embed = y_embed / (feature_map_size - 1)
+            # x_embed = x_embed / (feature_map_size - 1)
+            
+            # # Create grid
+            # y_embed, x_embed = torch.meshgrid(y_embed, x_embed, indexing="ij")
+            
+            # # Reshape to match feature sequence
+            # pos_embed = torch.cat([
+            #     y_embed.flatten().unsqueeze(-1), 
+            #     x_embed.flatten().unsqueeze(-1)
+            # ], dim=-1)
+            
+            # # Expand to batch size
+            # pos_embed = pos_embed.unsqueeze(0).repeat(batch_size, 1, 1)
+            
+            # # Scale to match image_features dimensions
+            # pos_embed = torch.nn.functional.pad(pos_embed, (0, hidden_dim - 2), "constant", 0)
+            
+            # # Object queries are position embeddings for the image features
+            # object_queries = pos_embed.to(
+            #     device=reference_position_embeddings.device,
+            #     dtype=reference_position_embeddings.dtype
+            # )
+                    # Create a pseudo 2D representation of your features to use with DabDetrSinePositionEmbedding
+            batch_size, seq_len, hidden_dim = image_features.shape
+            feature_map_size = int(seq_len**0.5)
+            
+            # Reshape features to 2D spatial layout (assuming square feature map)
+            reshaped_features = image_features.reshape(
+                batch_size, feature_map_size, feature_map_size, hidden_dim
+            ).permute(0, 3, 1, 2)  # [B, C, H, W]
+            
+            # Create a pixel mask for all valid positions
+            pixel_mask = torch.ones(
+                batch_size, feature_map_size, feature_map_size, 
+                device=image_features.device
+            )
+            
+            # Generate position embeddings using DabDetrSinePositionEmbedding
+            pos_embeddings = self.position_embedding(reshaped_features, pixel_mask)
+            
+            # Flatten back to match image_features shape
+            object_queries = pos_embeddings.flatten(2).permute(0, 2, 1)  # [B, H*W, C]
+            
+            
+            # Make sure object_queries has the right shape
+            if object_queries.shape[1] < image_features.shape[1]:
+                # Pad if needed
+                padding = torch.zeros(
+                    batch_size, 
+                    image_features.shape[1] - object_queries.shape[1], 
+                    hidden_dim,
+                    device=object_queries.device,
+                    dtype=object_queries.dtype
+                )
+                object_queries = torch.cat([object_queries, padding], dim=1)
+            elif object_queries.shape[1] > image_features.shape[1]:
+                # Truncate if needed
+                object_queries = object_queries[:, :image_features.shape[1], :]
+
 
             queries = torch.zeros(
                 self.batch_size,
@@ -395,11 +451,11 @@ class DabDETRIntegration(torch.nn.Module):
 
             return_dict = True
             decoder_outputs = self.decoder(
-                inputs_embeds=queries,
-                query_position_embeddings=reference_position_embeddings,
-                object_queries=object_queries,
-                encoder_hidden_states=image_features,
-                memory_key_padding_mask=~encoder_attention_mask,
+                inputs_embeds=projected_queries, # maybe use from llm?, query embeddings passed to decoder
+                query_position_embeddings=reference_position_embeddings, # position embeddings for self-attention
+                object_queries=object_queries, # position embeddings, added to q and k in cross-attention
+                encoder_hidden_states=image_features, # output of encoder, used for cross-attention
+                memory_key_padding_mask=~encoder_attention_mask, # which positions to ignore in encoder outputs
                 output_attentions=False,
                 output_hidden_states=False,
                 return_dict=return_dict,
@@ -409,9 +465,6 @@ class DabDETRIntegration(torch.nn.Module):
             # decoder_output = decoder_outputs[0]
 
             # Generate predictions
-            # logits = self.class_labels_classifier(decoder_output)
-            # pred_boxes = self.bbox_predictor(decoder_output).sigmoid()
-
             reference_points = (
                 decoder_outputs.reference_points if return_dict else decoder_outputs[-1]
             )
