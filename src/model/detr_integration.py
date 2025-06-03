@@ -8,7 +8,10 @@ from transformers import (
     DetrConfig,
     DetrForObjectDetection,
 )
-from transformers.models.dab_detr.modeling_dab_detr import inverse_sigmoid, DabDetrSinePositionEmbedding
+from transformers.models.dab_detr.modeling_dab_detr import (
+    DabDetrSinePositionEmbedding,
+    inverse_sigmoid,
+)
 
 from model.loss import dab_detr_loss, detr_loss
 from utils.config import ExperimentConfig
@@ -243,18 +246,19 @@ class DabDETRIntegration(torch.nn.Module):
         # detr_model = DabDetrModel.from_pretrained(
         #     "IDEA-Research/dab-detr-resnet-50", use_pretrained_backbone=False, use_timm_backbone=False#, backbone=None
         # )
-        config = DabDetrConfig.from_pretrained("IDEA-Research/dab-detr-resnet-50")
-        config.use_pretrained_backbone = False
-        config.use_timm_backbone = False
-        config.backbone = "microsoft/resnet-50"
+        detr_config = DabDetrConfig.from_pretrained("IDEA-Research/dab-detr-resnet-50")
+        detr_config.use_pretrained_backbone = False
+        detr_config.use_timm_backbone = False
+        detr_config.backbone = "microsoft/resnet-50"
         # config.use_backbone = False
         # config.backbone = None
 
         detr_model = DabDetrForObjectDetection.from_pretrained(
             "IDEA-Research/dab-detr-resnet-50",
-            config=config,
+            config=detr_config,
             ignore_mismatched_sizes=True,
         )
+
         self.detr_config = detr_model.config
 
         # Create DETR layer to use on LLM hidden states
@@ -302,7 +306,7 @@ class DabDETRIntegration(torch.nn.Module):
                 "Bbox ordering is set to size_desc - DETR loss will be using size based matching instead of hungarian matching."
             )
 
-        log.info(f"DETR model loaded for integration with LLM.")
+        log.info(f"DAB-DETR model loaded for integration with LLM.")
 
     def forward(
         self,
@@ -369,78 +373,80 @@ class DabDETRIntegration(torch.nn.Module):
             #     device=self.query_refpoint_embeddings.device,
             #     dtype=self.query_refpoint_embeddings.dtype,
             # )
-                        # Generate object queries with spatial information for SIGLIP features
+            # Generate object queries with spatial information for SIGLIP features
             # # Convert SIGLIP features to a spatial representation
             # batch_size, seq_len, hidden_dim = image_features.shape
-            
+
             # # Calculate approximate spatial dimensions (assuming square feature map)
             # feature_map_size = int(seq_len**0.5)
-            
+
             # # Create 2D position embeddings
             # y_embed = torch.arange(feature_map_size, device=image_features.device).float()
             # x_embed = torch.arange(feature_map_size, device=image_features.device).float()
-            
+
             # # Normalize to [0, 1]
             # y_embed = y_embed / (feature_map_size - 1)
             # x_embed = x_embed / (feature_map_size - 1)
-            
+
             # # Create grid
             # y_embed, x_embed = torch.meshgrid(y_embed, x_embed, indexing="ij")
-            
+
             # # Reshape to match feature sequence
             # pos_embed = torch.cat([
-            #     y_embed.flatten().unsqueeze(-1), 
+            #     y_embed.flatten().unsqueeze(-1),
             #     x_embed.flatten().unsqueeze(-1)
             # ], dim=-1)
-            
+
             # # Expand to batch size
             # pos_embed = pos_embed.unsqueeze(0).repeat(batch_size, 1, 1)
-            
+
             # # Scale to match image_features dimensions
             # pos_embed = torch.nn.functional.pad(pos_embed, (0, hidden_dim - 2), "constant", 0)
-            
+
             # # Object queries are position embeddings for the image features
             # object_queries = pos_embed.to(
             #     device=reference_position_embeddings.device,
             #     dtype=reference_position_embeddings.dtype
             # )
-                    # Create a pseudo 2D representation of your features to use with DabDetrSinePositionEmbedding
+            # Create a pseudo 2D representation of your features to use with DabDetrSinePositionEmbedding
             batch_size, seq_len, hidden_dim = image_features.shape
             feature_map_size = int(seq_len**0.5)
-            
+
             # Reshape features to 2D spatial layout (assuming square feature map)
             reshaped_features = image_features.reshape(
                 batch_size, feature_map_size, feature_map_size, hidden_dim
-            ).permute(0, 3, 1, 2)  # [B, C, H, W]
-            
+            ).permute(
+                0, 3, 1, 2
+            )  # [B, C, H, W]
+
             # Create a pixel mask for all valid positions
             pixel_mask = torch.ones(
-                batch_size, feature_map_size, feature_map_size, 
-                device=image_features.device
+                batch_size,
+                feature_map_size,
+                feature_map_size,
+                device=image_features.device,
             )
-            
+
             # Generate position embeddings using DabDetrSinePositionEmbedding
             pos_embeddings = self.position_embedding(reshaped_features, pixel_mask)
-            
+
             # Flatten back to match image_features shape
             object_queries = pos_embeddings.flatten(2).permute(0, 2, 1)  # [B, H*W, C]
-            
-            
+
             # Make sure object_queries has the right shape
             if object_queries.shape[1] < image_features.shape[1]:
                 # Pad if needed
                 padding = torch.zeros(
-                    batch_size, 
-                    image_features.shape[1] - object_queries.shape[1], 
+                    batch_size,
+                    image_features.shape[1] - object_queries.shape[1],
                     hidden_dim,
                     device=object_queries.device,
-                    dtype=object_queries.dtype
+                    dtype=object_queries.dtype,
                 )
                 object_queries = torch.cat([object_queries, padding], dim=1)
             elif object_queries.shape[1] > image_features.shape[1]:
                 # Truncate if needed
-                object_queries = object_queries[:, :image_features.shape[1], :]
-
+                object_queries = object_queries[:, : image_features.shape[1], :]
 
             queries = torch.zeros(
                 self.batch_size,
@@ -451,11 +457,11 @@ class DabDETRIntegration(torch.nn.Module):
 
             return_dict = True
             decoder_outputs = self.decoder(
-                inputs_embeds=projected_queries, # maybe use from llm?, query embeddings passed to decoder
-                query_position_embeddings=reference_position_embeddings, # position embeddings for self-attention
-                object_queries=object_queries, # position embeddings, added to q and k in cross-attention
-                encoder_hidden_states=image_features, # output of encoder, used for cross-attention
-                memory_key_padding_mask=~encoder_attention_mask, # which positions to ignore in encoder outputs
+                inputs_embeds=projected_queries,  # maybe use from llm?, query embeddings passed to decoder
+                query_position_embeddings=reference_position_embeddings,  # position embeddings for self-attention
+                object_queries=object_queries,  # position embeddings, added to q and k in cross-attention
+                encoder_hidden_states=image_features,  # output of encoder, used for cross-attention
+                memory_key_padding_mask=~encoder_attention_mask,  # which positions to ignore in encoder outputs
                 output_attentions=False,
                 output_hidden_states=False,
                 return_dict=return_dict,
@@ -494,6 +500,8 @@ class DabDETRIntegration(torch.nn.Module):
             #     loss, loss_dict, auxiliary_outputs = self.loss_function(
             #         logits, labels, self.device, pred_boxes, self.config, outputs_class, outputs_coord
             #     )
+
+        # print(logits, pred_boxes)
 
         return logits, pred_boxes
 
