@@ -380,14 +380,7 @@ class VisionLanguageModel(torch.nn.Module):
                 inputs_embeds.device
             )
 
-            inputs_embeds = inputs_embeds.to(self.model.device, self.model.dtype)
-
-            # log.info(
-            #     "inputs_embed type: %s, special_image_mask type: %s, image_features_proj type: %s",
-            #     inputs_embeds.dtype,
-            #     special_image_mask.dtype,
-            #     image_features_proj.dtype,
-            # )
+            inputs_embeds = inputs_embeds.to(self.model.device, image_features_proj.dtype)
             inputs_embeds = inputs_embeds.masked_scatter(
                 special_image_mask, image_features_proj
             )
@@ -582,6 +575,7 @@ class VisionLanguageModel(torch.nn.Module):
         # Integrate image features into embeddings
         special_image_mask = (input_ids == self.image_token_index).unsqueeze(-1)
         special_image_mask = special_image_mask.expand_as(inputs_embeds)
+        inputs_embeds = inputs_embeds.to(self.model.device, image_features_proj.dtype)
         inputs_embeds = inputs_embeds.masked_scatter(
             special_image_mask, image_features_proj
         )
