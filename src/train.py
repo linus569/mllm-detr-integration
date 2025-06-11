@@ -132,13 +132,15 @@ class Trainer:
                     images = batch["image_features"].to(self.device)
                 else:
                     images = batch["images"].to(self.device)
+                detr_labels = None
                 if self.config.detr_loss:
-                    labels = batch["detr_labels"]
-                    for l in labels:
+                    detr_labels = batch["detr_labels"]
+                    for l in detr_labels:
                         l["class_labels"] = l["class_labels"].to(self.device)
                         l["boxes"] = l["boxes"].to(self.device)
 
                 image_sizes = batch["image_sizes"]
+                pixel_values = batch["images"]
 
                 if "fasterrcnn" in self.config.model_name:
                     labels = self.processor.postprocess_target_batch(
@@ -147,7 +149,7 @@ class Trainer:
 
                 # Forward pass
                 outputs = self.train_step(
-                    step, input_ids, attention_mask, images, labels, image_sizes
+                    step, input_ids, attention_mask, images, labels, image_sizes, detr_labels, pixel_values
                 )
 
                 total_loss += outputs.loss.item()
@@ -238,7 +240,7 @@ class Trainer:
         return best_map
 
     def train_step(
-        self, step, input_ids, attention_mask, images, labels, image_sizes=None
+        self, step, input_ids, attention_mask, images, labels, image_sizes=None, detr_labels=None, pixel_values=None,
     ):
         with autocast(
             device_type=self.device.type,
@@ -251,6 +253,9 @@ class Trainer:
                 images=images,
                 labels=labels,
                 image_sizes=image_sizes,
+                tokenizer=self.processor.tokenizer,
+                detr_labels=detr_labels,
+                pixel_values=pixel_values,  # for image_processor in full_detr
             )
         loss = outputs.loss / self.gradient_accumulation_steps
 
@@ -325,6 +330,7 @@ class Trainer:
                     top_p=0.9,
                     top_k=50,
                     image_sizes=batch["image_sizes"],
+                    pixel_values=batch["images"],  # for image_processor in full_detr 
                 )
 
             if "fasterrcnn" in self.config.model_name:

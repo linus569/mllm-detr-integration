@@ -153,7 +153,7 @@ class DETRIntegration(torch.nn.Module):
             # Get position embeddings
             query_position_embeddings = self.query_position_embeddings.weight.unsqueeze(
                 0
-            ).repeat(self.batch_size, 1, 1)[:, :num_query_tokens, :]
+            ).repeat(self.batch_size, 1, 1)#[:, :num_query_tokens, :]
 
             # Create object queries
             # added to queries and keys in each cross-attention layer
@@ -164,6 +164,14 @@ class DETRIntegration(torch.nn.Module):
                 device=projected_queries.device,
                 dtype=projected_queries.dtype,
             )
+
+
+            # inputs_embeds = torch.zeros_like(projected_queries)
+
+            # object_queries = DetrSinePositionEmbedding(128, normalize=True)(
+            #     projected_queries, torch.ones_like(image_features[:, :, 0])
+            # )
+
 
             # Run decoder
             decoder_outputs = self.decoder(
@@ -207,6 +215,130 @@ class DETRIntegration(torch.nn.Module):
             sized_based_matching=self.config.bbox_ordering == "size_desc",
         )
 
+class FullDETRIntegration(torch.nn.Module):
+    """
+    Module handling DETR object detection integration with Language Model.
+    """
+
+    def __init__(
+        self,
+        config: ExperimentConfig,
+        llm_hidden_size: int,
+        image_encoder_hidden_size: int,
+        batch_size: int,
+        device: str,
+    ):
+        """
+        Initialize the DETR components.
+
+        Args:
+            config: Experiment configuration.
+            llm_hidden_size: Hidden size of the language model.
+            image_encoder_hidden_size: Hidden size of the image encoder.
+            batch_size: Batch size for processing.
+            device: Device to run the model on (e.g., 'cuda' or 'cpu').
+        """
+        super().__init__()
+
+        self.config = config
+        self.device = device
+        self.batch_size = batch_size
+
+        # Load pretrained DETR model
+        self.detr_model = DetrForObjectDetection.from_pretrained(
+            "facebook/detr-resnet-50", revision="no_timm"
+        ).to(device)
+
+        # Use DetrConfig to create a new configuration with custom num_queries
+        self.detr_config = self.detr_model.config
+
+        # currently shape (batch_size, mm_hidden_size, vocab_size)
+        # project to shape (batch_size, mm_hidden_size, d_model)
+
+        self.input_projection = torch.nn.Sequential(
+            torch.nn.Linear(llm_hidden_size, self.detr_config.d_model),
+            torch.nn.GELU(),
+            torch.nn.Linear(self.detr_config.d_model, self.detr_config.d_model),
+        )
+
+        # Only freeze backbone, not the full model
+        for name, param in self.detr_model.named_parameters():
+            if "backbone" in name:
+                param.requires_grad = False
+            else:
+                param.requires_grad = True
+
+        if self.config.bbox_ordering == "size_desc":
+            log.warning(
+                "Bbox ordering is set to size_desc - DETR loss will be using size based matching instead of hungarian matching."
+            )
+
+        log.info(f"Full DETR model incl. RestNet50 loaded for integration with LLM.")
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        outputs: torch.Tensor,
+        image_features: torch.Tensor,
+        query_tokens_id: torch.Tensor,
+        num_query_tokens: int,
+        pixel_values: Optional[torch.Tensor] = None,
+        image_sizes: Optional[List[Tuple[int, int]]] = None,
+        **kwargs,
+    ):
+        """Process hidden states with DETR head."""
+
+        # Extract sequence output from hidden states
+        # if output of lm_heads is wanted, use outputs[0]
+        sequence_output = outputs.hidden_states[-1]
+
+        # Extract query tokens
+        sequence_output_queries = []
+        for ids in input_ids:
+            query_position = torch.where(ids == query_tokens_id[0])[0][0]
+            sequence_output_queries.append(
+                sequence_output[
+                    0, query_position : query_position + num_query_tokens, :
+                ].unsqueeze(0)
+            )
+        sequence_output_queries = torch.cat(sequence_output_queries, dim=0)
+
+        # Project queries to DETR dimension
+        projected_queries = self.input_projection(sequence_output_queries)
+
+
+        pixel_values = pixel_values.to(self.device) if pixel_values is not None else None
+        output = self.detr_model.forward(
+            pixel_values=pixel_values,
+            inputs_embeds=projected_queries,  # Query embeddings from LLM
+            return_dict=True,
+        )
+
+        self.loss_value = output.loss if hasattr(output, 'loss') else None
+
+        return output.logits, output.pred_boxes
+
+
+    def loss(
+        self,
+        logits,
+        labels,
+        pred_boxes,
+        outputs_class=None,
+        outputs_coord=None,
+        **kwargs,
+    ):
+        # return self.loss_value
+        return detr_loss(
+            logits=logits,
+            labels=labels,
+            device=self.config.device,
+            pred_boxes=pred_boxes,
+            config=self.detr_config,
+            outputs_class=outputs_class,
+            outputs_coord=outputs_coord,
+            sized_based_matching=self.config.bbox_ordering == "size_desc",
+        )
 
 class DabDETRIntegration(torch.nn.Module):
     """

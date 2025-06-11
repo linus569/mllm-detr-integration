@@ -108,3 +108,5 @@ class ExperimentConfig:
     use_precompute: bool = False
     precompute_path: Optional[str] = None
     precompute_batch_size: Optional[int] = None
+
+    feedback_detr_to_llm: bool = False

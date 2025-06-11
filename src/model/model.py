@@ -6,7 +6,11 @@ from llava.model.language_model.llava_qwen import LlavaQwenForCausalLM
 from transformers import AutoModel, DetrForObjectDetection
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
-from model.detr_integration import DabDETRIntegration, DETRIntegration
+from model.detr_integration import (
+    DabDETRIntegration,
+    DETRIntegration,
+    FullDETRIntegration,
+)
 from model.image_encoder import (
     BaseImageEncoder,
     DinoV2ImageEncoder,
@@ -32,6 +36,7 @@ dict_image_encoders = {
 dict_detr_module = {
     "detr": DETRIntegration,
     "dabdetr": DabDETRIntegration,
+    "full_detr": FullDETRIntegration,
 }
 
 
@@ -90,14 +95,13 @@ class VisionLanguageModel(torch.nn.Module):
             f"Image encoder {self.config.image_encoder.name} initialized with output dim {image_encoder_embed_dim} -> {llm_embed_dim}"
         )
 
-        # Freeze all LLM model parameters
-        if config.freeze_model:
-            for param in self.model.parameters():
-                param.requires_grad = False
+        # Un/freeze LLM model depending on config
+        for param in self.model.parameters():
+            param.requires_grad = not config.freeze_model
 
         # Unfreeze projector parameters for fine-tuning
         for param in self.projector.parameters():
-            param.requires_grad = True
+            param.requires_grad = True  # set to False if projector should be frozen
 
         # Resize embeddings to correct start size if necessary
         if tokenizer_size is None:
@@ -300,13 +304,14 @@ class VisionLanguageModel(torch.nn.Module):
         # shape of image_features is (batch_size, (num_patches), num_image_tokens, token_size_text_encoder)
         return image_features, image_features_proj
 
-    def _use_detr_head(self, input_ids, outputs, image_features):
+    def _use_detr_head(self, input_ids, outputs, image_features, pixel_values=None):
         return self.detr_integration.forward(
             input_ids=input_ids,
             outputs=outputs,
             image_features=image_features,
             query_tokens_id=self.query_tokens_id,
             num_query_tokens=self.config.num_query_tokens,
+            pixel_values=pixel_values,
         )
 
     def forward(
@@ -326,6 +331,9 @@ class VisionLanguageModel(torch.nn.Module):
         modalities: Optional[List[str]] = ["image"],
         dpo_forward: Optional[bool] = False,
         cache_position=None,
+        tokenizer=None,
+        detr_labels=None,
+        pixel_values: Optional[torch.FloatTensor] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You have to specify either input_ids or inputs_embeds")
@@ -347,8 +355,10 @@ class VisionLanguageModel(torch.nn.Module):
                 image_features, image_features_proj = self._get_image_features(
                     images, image_sizes
                 )
+                image_features.to(self.model.device, self.model.dtype)
+                image_features_proj.to(self.model.device, self.model.dtype)
 
-            image_features_detr = image_features.clone()
+            # image_features_detr = image_features.clone()
 
             # Integrate image features into token embeddings
             n_image_tokens = (input_ids == self.image_token_index).sum()
@@ -369,6 +379,15 @@ class VisionLanguageModel(torch.nn.Module):
             special_image_mask = special_image_mask.expand_as(inputs_embeds).to(
                 inputs_embeds.device
             )
+
+            inputs_embeds = inputs_embeds.to(self.model.device, self.model.dtype)
+
+            # log.info(
+            #     "inputs_embed type: %s, special_image_mask type: %s, image_features_proj type: %s",
+            #     inputs_embeds.dtype,
+            #     special_image_mask.dtype,
+            #     image_features_proj.dtype,
+            # )
             inputs_embeds = inputs_embeds.masked_scatter(
                 special_image_mask, image_features_proj
             )
@@ -391,16 +410,127 @@ class VisionLanguageModel(torch.nn.Module):
 
         loss = None
         if labels is not None:
-            if self.config.detr_loss:
+            if self.config.detr_loss and detr_labels is not None:
                 logits, pred_boxes = self._use_detr_head(
-                    input_ids, outputs, image_features_detr
+                    input_ids, outputs, image_features, pixel_values
                 )
 
                 loss = self.detr_integration.loss(
                     logits=logits,
-                    labels=labels,
+                    labels=detr_labels,
                     pred_boxes=pred_boxes,
                 )
+
+                if self.config.feedback_detr_to_llm:
+                    log.info(
+                        f"Loss: {loss.item()}, logits shape: {logits.shape}, pred_boxes shape: {pred_boxes.shape}"
+                    )
+                    # get pred_boxes with class name from logits and pred_boxes
+                    # class_names_id = logits.argmax(dim=-1)
+                    class_names_str = self.detr_integration.detr_config.id2label
+
+                    prob = torch.nn.functional.softmax(logits, -1)
+                    scores, labels_pred = prob[..., :-1].max(-1)
+
+                    # log.info(f"Scores: {scores}, Labels: {labels_pred}")
+
+                    threshold = 0.0
+
+                    class_names = []
+                    results = []
+                    results_string_batch = []
+                    for j in range(self.config.batch_size):
+                        results_string = ""
+                        class_names.append(
+                            [
+                                (
+                                    class_names_str[i.item()]
+                                    if i < len(class_names_str)
+                                    else "unknown"
+                                )
+                                for i in labels_pred[j]
+                            ]
+                        )
+                        for s, l, b in zip(scores, labels_pred, pred_boxes):
+                            score = s[s > threshold]
+                            label = l[s > threshold]
+                            box = b[s > threshold]
+                            results.append(
+                                {"scores": score, "labels": label, "boxes": box}
+                            )
+                            results_string += (
+                                "scores: {}, labels: {}, boxes: {}".format(
+                                    score.tolist(), label.tolist(), box.tolist()
+                                )
+                            )
+
+                        results_string_batch.append(results_string)
+
+                    # log.info(results_string_batch)
+
+                    # tokenize and embed results_string
+                    # or use some kind of projection layer to get embeddings that i can add t input embeddings, and feed back to model
+                    tokenized_results = tokenizer(
+                        results_string_batch,
+                        return_tensors="pt",
+                        padding="max_length",
+                        truncation=True,
+                        max_length=1024,
+                    )
+
+                    inputs_embeds_results = torch.stack(
+                        [
+                            torch.tensor(s).to(self.model.device)
+                            for s in tokenized_results["input_ids"]
+                        ]
+                    )
+                    embedding_results_string = self.model.get_input_embeddings()(
+                        inputs_embeds_results
+                    )
+                    inputs_embeds = torch.cat(
+                        [inputs_embeds, embedding_results_string], dim=1
+                    )
+
+                    attention_mask = torch.cat(
+                        [
+                            attention_mask,
+                            torch.ones(
+                                embedding_results_string.shape[0],
+                                embedding_results_string.shape[1],
+                            ).to(self.model.device),
+                        ],
+                        dim=1,
+                    )
+
+                    # TODO: may put before the prompt that the llm should put its response
+
+                    # 2nd run through llm with longer input embeddings
+                    outputs = self.model(
+                        attention_mask=attention_mask,
+                        position_ids=position_ids,
+                        past_key_values=past_key_values,
+                        inputs_embeds=inputs_embeds,
+                        use_cache=use_cache,
+                        output_attentions=output_attentions,
+                        output_hidden_states=output_hidden_states,
+                        return_dict=return_dict,
+                    )
+
+                    labels = torch.cat(
+                        [
+                            labels,
+                            torch.full(embedding_results_string.shape[:2], -100).to(
+                                self.model.device
+                            ),
+                        ],
+                        dim=1,
+                    )
+
+                    # use detr loss, already calculated and cross_entropy loss on 2nd run through llm
+                    loss_llm = masked_cross_entropy(
+                        outputs.logits, labels, vocab_size=self.vocab_size
+                    )
+                    loss = loss + loss_llm if loss is not None else loss_llm
             else:
                 loss = masked_cross_entropy(
                     outputs.logits, labels, vocab_size=self.vocab_size
@@ -424,6 +554,7 @@ class VisionLanguageModel(torch.nn.Module):
         max_new_tokens=2048,
         stopping_criteria=None,
         image_sizes: Optional[List[List[int]]] = None,
+        pixel_values: Optional[torch.FloatTensor] = None,
         **kwargs,
     ):
         if image is None:
@@ -442,7 +573,7 @@ class VisionLanguageModel(torch.nn.Module):
                 image, image_sizes
             )
 
-        image_features_detr = image_features.clone()
+        # image_features_detr = image_features.clone()
 
         # Token embeddings
         embedding_layer = self.model.get_input_embeddings()
@@ -471,7 +602,7 @@ class VisionLanguageModel(torch.nn.Module):
             )
 
             logits, pred_boxes = self._use_detr_head(
-                input_ids, outputs, image_features_detr
+                input_ids, outputs, image_features, pixel_values
             )
 
             outputs = {
