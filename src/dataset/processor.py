@@ -462,9 +462,9 @@ class Processor(ProcessorMixin):
                             precomputed_img[i] = f["precomputed_val_img"][id]
 
                 image_features = torch.from_numpy(precomputed_img)
-            else:
+            #else:
                 # fixed_size images, stack tensors
-                images = torch.stack(transformed_images)
+            images = torch.stack(transformed_images) 
                 # image_sizes = None
 
         # Store the original image sizes for proper feature map calculation
