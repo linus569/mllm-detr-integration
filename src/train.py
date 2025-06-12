@@ -149,7 +149,14 @@ class Trainer:
 
                 # Forward pass
                 outputs = self.train_step(
-                    step, input_ids, attention_mask, images, labels, image_sizes, detr_labels, pixel_values
+                    step,
+                    input_ids,
+                    attention_mask,
+                    images,
+                    labels,
+                    image_sizes,
+                    detr_labels,
+                    pixel_values,
                 )
 
                 total_loss += outputs.loss.item()
@@ -240,7 +247,15 @@ class Trainer:
         return best_map
 
     def train_step(
-        self, step, input_ids, attention_mask, images, labels, image_sizes=None, detr_labels=None, pixel_values=None,
+        self,
+        step,
+        input_ids,
+        attention_mask,
+        images,
+        labels,
+        image_sizes=None,
+        detr_labels=None,
+        pixel_values=None,
     ):
         with autocast(
             device_type=self.device.type,
@@ -330,7 +345,8 @@ class Trainer:
                     top_p=0.9,
                     top_k=50,
                     image_sizes=batch["image_sizes"],
-                    pixel_values=batch["images"],  # for image_processor in full_detr 
+                    pixel_values=batch["images"],  # for image_processor in full_detr
+                    tokenizer=self.processor.tokenizer,
                 )
 
             if "fasterrcnn" in self.config.model_name:
@@ -523,9 +539,13 @@ def run_training(config: ExperimentConfig):
     if config.load_checkpoint:
         path = os.path.join(config.checkpoint_dir, config.load_checkpoint)
         checkpoint = torch.load(path, map_location=device)
-        missing_keys, unexpected_keys = model.load_state_dict(checkpoint["model_state_dict"])
-        log.info(f"Loaded checkpoint from {path}. Missing keys: {missing_keys}, Unexpected keys: {unexpected_keys}")
-        
+        missing_keys, unexpected_keys = model.load_state_dict(
+            checkpoint["model_state_dict"]
+        )
+        log.info(
+            f"Loaded checkpoint from {path}. Missing keys: {missing_keys}, Unexpected keys: {unexpected_keys}"
+        )
+
     if not config.debug:
         model = torch.compile(model)  # 2.3 it/s without -> 4.5 it/s with
 

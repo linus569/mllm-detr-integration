@@ -314,6 +314,75 @@ class VisionLanguageModel(torch.nn.Module):
             pixel_values=pixel_values,
         )
 
+    def feedback_detr_to_llm(
+        self, tokenizer, pred_boxes, class_names_str, scores, labels_pred
+    ):
+        threshold = 0.0
+
+        class_names = []
+        results = []
+        results_string_batch = []
+        for j in range(self.config.batch_size):
+            results_string = ""
+            class_names.append(
+                [
+                    (
+                        class_names_str[i.item()]
+                        if i < len(class_names_str)
+                        else "unknown"
+                    )
+                    for i in labels_pred[j]
+                ]
+            )
+            for s, l, b in zip(scores, labels_pred, pred_boxes):
+                score = s[s > threshold]
+                label = l[s > threshold]
+                box = b[s > threshold]
+                results.append({"scores": score, "labels": label, "boxes": box})
+                results_string += "scores: {}, labels: {}, boxes: {}".format(
+                    score.tolist(), label.tolist(), box.tolist()
+                )
+
+            results_string_batch.append(results_string)
+
+            # log.info(results_string_batch)
+
+            # tokenize and embed results_string
+            # or use some kind of projection layer to get embeddings that i can add t input embeddings, and feed back to model
+        tokenized_results = tokenizer(
+            results_string_batch,
+            return_tensors="pt",
+            padding="max_length",
+            truncation=True,
+            max_length=1024,
+        )
+
+        # TODO: may put before the prompt that the llm should put its response
+
+        inputs_embeds_results = torch.stack(
+            [
+                torch.tensor(s).to(self.model.device)
+                for s in tokenized_results["input_ids"]
+            ]
+        )
+        embedding_results_string = self.model.get_input_embeddings()(
+            inputs_embeds_results
+        )
+        inputs_embeds = torch.cat([inputs_embeds, embedding_results_string], dim=1)
+
+        attention_mask = torch.cat(
+            [
+                attention_mask,
+                torch.ones(
+                    embedding_results_string.shape[0],
+                    embedding_results_string.shape[1],
+                ).to(self.model.device),
+            ],
+            dim=1,
+        )
+
+        return attention_mask, inputs_embeds, embedding_results_string
+
     def forward(
         self,
         input_ids: torch.LongTensor = None,
@@ -380,7 +449,9 @@ class VisionLanguageModel(torch.nn.Module):
                 inputs_embeds.device
             )
 
-            inputs_embeds = inputs_embeds.to(self.model.device, image_features_proj.dtype)
+            inputs_embeds = inputs_embeds.to(
+                self.model.device, image_features_proj.dtype
+            )
             inputs_embeds = inputs_embeds.masked_scatter(
                 special_image_mask, image_features_proj
             )
@@ -415,87 +486,15 @@ class VisionLanguageModel(torch.nn.Module):
                 )
 
                 if self.config.feedback_detr_to_llm:
-                    log.info(
-                        f"Loss: {loss.item()}, logits shape: {logits.shape}, pred_boxes shape: {pred_boxes.shape}"
-                    )
                     # get pred_boxes with class name from logits and pred_boxes
-                    # class_names_id = logits.argmax(dim=-1)
                     class_names_str = self.detr_integration.detr_config.id2label
-
                     prob = torch.nn.functional.softmax(logits, -1)
                     scores, labels_pred = prob[..., :-1].max(-1)
-
-                    # log.info(f"Scores: {scores}, Labels: {labels_pred}")
-
-                    threshold = 0.0
-
-                    class_names = []
-                    results = []
-                    results_string_batch = []
-                    for j in range(self.config.batch_size):
-                        results_string = ""
-                        class_names.append(
-                            [
-                                (
-                                    class_names_str[i.item()]
-                                    if i < len(class_names_str)
-                                    else "unknown"
-                                )
-                                for i in labels_pred[j]
-                            ]
+                    attention_mask, inputs_embeds, embedding_results_string = (
+                        self.feedback_detr_to_llm(
+                            tokenizer, pred_boxes, class_names_str, scores, labels_pred
                         )
-                        for s, l, b in zip(scores, labels_pred, pred_boxes):
-                            score = s[s > threshold]
-                            label = l[s > threshold]
-                            box = b[s > threshold]
-                            results.append(
-                                {"scores": score, "labels": label, "boxes": box}
-                            )
-                            results_string += (
-                                "scores: {}, labels: {}, boxes: {}".format(
-                                    score.tolist(), label.tolist(), box.tolist()
-                                )
-                            )
-
-                        results_string_batch.append(results_string)
-
-                    # log.info(results_string_batch)
-
-                    # tokenize and embed results_string
-                    # or use some kind of projection layer to get embeddings that i can add t input embeddings, and feed back to model
-                    tokenized_results = tokenizer(
-                        results_string_batch,
-                        return_tensors="pt",
-                        padding="max_length",
-                        truncation=True,
-                        max_length=1024,
                     )
-
-                    inputs_embeds_results = torch.stack(
-                        [
-                            torch.tensor(s).to(self.model.device)
-                            for s in tokenized_results["input_ids"]
-                        ]
-                    )
-                    embedding_results_string = self.model.get_input_embeddings()(
-                        inputs_embeds_results
-                    )
-                    inputs_embeds = torch.cat(
-                        [inputs_embeds, embedding_results_string], dim=1
-                    )
-
-                    attention_mask = torch.cat(
-                        [
-                            attention_mask,
-                            torch.ones(
-                                embedding_results_string.shape[0],
-                                embedding_results_string.shape[1],
-                            ).to(self.model.device),
-                        ],
-                        dim=1,
-                    )
-
-                    # TODO: may put before the prompt that the llm should put its response
 
                     # 2nd run through llm with longer input embeddings
                     outputs = self.model(
@@ -548,6 +547,7 @@ class VisionLanguageModel(torch.nn.Module):
         stopping_criteria=None,
         image_sizes: Optional[List[List[int]]] = None,
         pixel_values: Optional[torch.FloatTensor] = None,
+        tokenizer=None,
         **kwargs,
     ):
         if image is None:
@@ -582,27 +582,50 @@ class VisionLanguageModel(torch.nn.Module):
 
         # Generate text
         if self.config.detr_loss:
-            # LLM forward pass
             assert self.model.eval()
-            outputs = self.model(
-                attention_mask=attention_mask,
-                position_ids=None,
-                past_key_values=None,
-                inputs_embeds=inputs_embeds,
-                use_cache=None,
-                output_attentions=None,
-                output_hidden_states=True,  # needed
-                return_dict=None,
-            )
 
-            logits, pred_boxes = self._use_detr_head(
-                input_ids, outputs, image_features, pixel_values
-            )
+            if self.config.feedback_detr_to_llm:
+                # Use LLM with information from DETR head for predictions
+                # get pred_boxes with class name from logits and pred_boxes
+                class_names_str = self.detr_integration.detr_config.id2label
+                prob = torch.nn.functional.softmax(logits, -1)
+                scores, labels_pred = prob[..., :-1].max(-1)
+                attention_mask, inputs_embeds, embedding_results_string = (
+                    self.feedback_detr_to_llm(
+                        tokenizer, pred_boxes, class_names_str, scores, labels_pred
+                    )
+                )
 
-            outputs = {
-                "pred_boxes": pred_boxes,
-                "pred_logits": logits,
-            }
+                # 2nd run through llm with longer input embeddings
+                outputs = super(LlavaQwenForCausalLM, self.model).generate(
+                    inputs_embeds=inputs_embeds,
+                    max_new_tokens=max_new_tokens,
+                    attention_mask=attention_mask,
+                    stopping_criteria=stopping_criteria,
+                    **kwargs,
+                )
+
+            else:
+                # Use DETR head to get predictions
+                # LLM forward pass
+                outputs = self.model(
+                    attention_mask=attention_mask,
+                    position_ids=None,
+                    past_key_values=None,
+                    inputs_embeds=inputs_embeds,
+                    use_cache=None,
+                    output_attentions=None,
+                    output_hidden_states=True,  # needed
+                    return_dict=None,
+                )
+                # DETR head forward pass to get predictions
+                logits, pred_boxes = self._use_detr_head(
+                    input_ids, outputs, image_features, pixel_values
+                )
+                outputs = {
+                    "pred_boxes": pred_boxes,
+                    "pred_logits": logits,
+                }
         else:
             # direcly call generate on superclass as inputs_embeds is already created and class implementation does not support this
             outputs = super(LlavaQwenForCausalLM, self.model).generate(
