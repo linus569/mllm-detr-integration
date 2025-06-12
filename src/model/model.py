@@ -72,6 +72,7 @@ class VisionLanguageModel(torch.nn.Module):
             config=self.config,
             model=self.model if self.config.image_encoder.name == "siglip" else None,
         )
+        # self.image_encoder.to(self.config.dtype)
 
         # Check if image encoder is frozen
         for param in self.image_encoder.encoder.parameters():
@@ -315,7 +316,14 @@ class VisionLanguageModel(torch.nn.Module):
         )
 
     def feedback_detr_to_llm(
-        self, tokenizer, pred_boxes, class_names_str, scores, labels_pred
+        self,
+        tokenizer,
+        pred_boxes,
+        class_names_str,
+        scores,
+        labels_pred,
+        inputs_embeds,
+        attention_mask,
     ):
         threshold = 0.0
 
@@ -492,7 +500,13 @@ class VisionLanguageModel(torch.nn.Module):
                     scores, labels_pred = prob[..., :-1].max(-1)
                     attention_mask, inputs_embeds, embedding_results_string = (
                         self.feedback_detr_to_llm(
-                            tokenizer, pred_boxes, class_names_str, scores, labels_pred
+                            tokenizer,
+                            pred_boxes,
+                            class_names_str,
+                            scores,
+                            labels_pred,
+                            inputs_embeds,
+                            attention_mask,
                         )
                     )
 
@@ -583,6 +597,26 @@ class VisionLanguageModel(torch.nn.Module):
         # Generate text
         if self.config.detr_loss:
             assert self.model.eval()
+            # Use DETR head to get predictions
+            # LLM forward pass
+            outputs = self.model(
+                attention_mask=attention_mask,
+                position_ids=None,
+                past_key_values=None,
+                inputs_embeds=inputs_embeds,
+                use_cache=None,
+                output_attentions=None,
+                output_hidden_states=True,  # needed
+                return_dict=None,
+            )
+            # DETR head forward pass to get predictions
+            logits, pred_boxes = self._use_detr_head(
+                input_ids, outputs, image_features, pixel_values
+            )
+            outputs = {
+                "pred_boxes": pred_boxes,
+                "pred_logits": logits,
+            }
 
             if self.config.feedback_detr_to_llm:
                 # Use LLM with information from DETR head for predictions
@@ -592,7 +626,13 @@ class VisionLanguageModel(torch.nn.Module):
                 scores, labels_pred = prob[..., :-1].max(-1)
                 attention_mask, inputs_embeds, embedding_results_string = (
                     self.feedback_detr_to_llm(
-                        tokenizer, pred_boxes, class_names_str, scores, labels_pred
+                        tokenizer,
+                        pred_boxes,
+                        class_names_str,
+                        scores,
+                        labels_pred,
+                        inputs_embeds,
+                        attention_mask,
                     )
                 )
 
@@ -604,28 +644,6 @@ class VisionLanguageModel(torch.nn.Module):
                     stopping_criteria=stopping_criteria,
                     **kwargs,
                 )
-
-            else:
-                # Use DETR head to get predictions
-                # LLM forward pass
-                outputs = self.model(
-                    attention_mask=attention_mask,
-                    position_ids=None,
-                    past_key_values=None,
-                    inputs_embeds=inputs_embeds,
-                    use_cache=None,
-                    output_attentions=None,
-                    output_hidden_states=True,  # needed
-                    return_dict=None,
-                )
-                # DETR head forward pass to get predictions
-                logits, pred_boxes = self._use_detr_head(
-                    input_ids, outputs, image_features, pixel_values
-                )
-                outputs = {
-                    "pred_boxes": pred_boxes,
-                    "pred_logits": logits,
-                }
         else:
             # direcly call generate on superclass as inputs_embeds is already created and class implementation does not support this
             outputs = super(LlavaQwenForCausalLM, self.model).generate(
