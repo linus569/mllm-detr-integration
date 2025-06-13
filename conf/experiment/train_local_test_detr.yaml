@@ -6,7 +6,7 @@ defaults:
   - /image_encoder: siglip
 
 debug: true
-device: cpu #mps
+device: mps #mps
 num_workers: 0
 
 name: local_test
@@ -15,7 +15,7 @@ main_dir: .
 model_name: 'lmms-lab/llava-onevision-qwen2-0.5b-si'
 checkpoint_dir: 'checkpoints'
 
-batch_size: 1
+batch_size: 2
 total_batch_size: 2
 num_samples: 15
 val_num_samples: 2
@@ -26,7 +26,7 @@ lr: 1e-3
 warmup_ratio: 0.1
 weight_decay: null # not used
 max_grad_norm: 1.0
-max_tokens: 3200 #null
+max_tokens: 6400 #null
 pad_to_multiple_of: 128
 
 temperature: 0.3
@@ -34,9 +34,13 @@ use_amp: false
 
 num_coordinate_bins: 100 # florence paper uses 1000
 
-evaluate: false # overwrite value from train.yaml
+evaluate: true # overwrite value from train.yaml
+train: true
+
+detr_loss: true
+num_query_tokens: 12
 
 # precompute
-use_precompute: true
+use_precompute: false # on eval double as fast on mac than without precompute
 precompute_path: 'precomputed_img_siglip_bs2_bfloat16.hdf5'
 precompute_batch_size: 2

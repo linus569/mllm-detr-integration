@@ -66,7 +66,7 @@ def get_token_initializers(
         elif token.startswith("<y"):
             initializers[token] = get_token_ids(f"coordinate y{token[2:-2]}")
         elif token.startswith("<query"):
-            initializers[token] = get_token_ids(f"coordinate query{token[6:-2]}")
+            initializers[token] = get_token_ids(f"coordinate query{token[6:-2]}") # TODO: rename to object 1, object 2
         else:
             initializers[token] = []
 

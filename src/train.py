@@ -352,7 +352,7 @@ class Trainer:
             if "fasterrcnn" in self.config.model_name:
                 predicted_boxes = outputs
                 generated_text = None
-            elif self.config.detr_loss:
+            elif self.config.detr_loss and not self.config.feedback_detr_to_llm:
                 predicted_boxes = self.processor.postprocess_detr_pred_batch(
                     outputs, batch["image_sizes"]
                 )

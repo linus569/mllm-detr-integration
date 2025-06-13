@@ -216,7 +216,7 @@ def run_script(config: ExperimentConfig):
         model = torch.compile(model)  # 2.3 it/s without -> 4.5 it/s with
 
     config.use_precompute = False # set to False to avoid loading already precomputed features 
-
+    
     # build train_dataloader with is_train=False to avoid random sampling
     train_dataloader = build_dataloader(
         processor=processor,
@@ -225,14 +225,14 @@ def run_script(config: ExperimentConfig):
         batch_size=config.batch_size,
         num_workers=config.num_workers,
         load_precomputed_embeddings=False,
-        subset_size=None,
+        subset_size=None, # Note: set to 100 for testing, otherwise None
         use_random_subset=True,
     )
 
     val_dataloader = build_val_dataloader(
         config=config,
         processor=processor,
-        # subset_size=config.val_num_samples,
+        subset_size=None, # Note: set to 100 for testing, otherwise None
     )
 
     output_file = "precomputed_img_siglip_bs2_bfloat16.hdf5"

@@ -8,6 +8,9 @@ from transformers import (
     DetrConfig,
     DetrForObjectDetection,
 )
+# from transformers.models.detr.modeling_detr import (
+#     DetrSinePositionEmbedding,
+# )
 from transformers.models.dab_detr.modeling_dab_detr import (
     DabDetrSinePositionEmbedding,
     inverse_sigmoid,
@@ -109,6 +112,7 @@ class DETRIntegration(torch.nn.Module):
         image_features: torch.Tensor,
         query_tokens_id: torch.Tensor,
         num_query_tokens: int,
+        **kwargs,
     ):
         """Process hidden states with DETR head."""
 
@@ -447,6 +451,7 @@ class DabDETRIntegration(torch.nn.Module):
         image_features: torch.Tensor,
         query_tokens_id: torch.Tensor,
         num_query_tokens: int,
+        **kwargs,
     ):
         """Process hidden states with DETR head."""
 
