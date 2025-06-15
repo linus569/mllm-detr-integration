@@ -275,8 +275,8 @@ class Processor(ProcessorMixin):
         combined_text = (
             "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
             "<|im_start|>user\n"
-            f"{image_tokens}\n"
-            f"{prompt}{query_tokens}<|im_end|>\n"
+            f"{image_tokens}{query_tokens}\n"
+            f"{prompt}<|im_end|>\n"
             "<|im_start|>assistant\n"
         )
 

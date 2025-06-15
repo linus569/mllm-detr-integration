@@ -4,11 +4,13 @@ from typing import List, Optional, Tuple, Union
 import torch
 from llava.model.language_model.llava_qwen import LlavaQwenForCausalLM
 from transformers import AutoModel, DetrForObjectDetection
+from transformers.loss.loss_for_object_detection import HungarianMatcher
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from model.detr_integration import (
     DabDETRIntegration,
     DETRIntegration,
+    DETROutput,
     FullDETRIntegration,
 )
 from model.image_encoder import (

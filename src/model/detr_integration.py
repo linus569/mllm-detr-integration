@@ -8,6 +8,7 @@ from transformers import (
     DetrConfig,
     DetrForObjectDetection,
 )
+
 # from transformers.models.detr.modeling_detr import (
 #     DetrSinePositionEmbedding,
 # )
@@ -20,6 +21,30 @@ from model.loss import dab_detr_loss, detr_loss
 from utils.config import ExperimentConfig
 
 log = logging.getLogger(__name__)
+
+
+class DETROutput:
+    """
+    Class to hold DETR model outputs.
+    """
+
+    def __init__(
+        self,
+        logits: torch.Tensor,
+        pred_boxes: torch.Tensor,
+        last_hidden_state: Optional[torch.Tensor] = None,
+    ):
+        """
+        Initialize the DETROutput.
+
+        Args:
+            logits: Class logits from the DETR model.
+            pred_boxes: Predicted bounding boxes from the DETR model.
+            last_hidden_state: Optional last hidden state from the model, if available.
+        """
+        self.logits = logits
+        self.pred_boxes = pred_boxes
+        self.last_hidden_state = last_hidden_state
 
 
 class DETRIntegration(torch.nn.Module):
@@ -157,7 +182,9 @@ class DETRIntegration(torch.nn.Module):
             # Get position embeddings
             query_position_embeddings = self.query_position_embeddings.weight.unsqueeze(
                 0
-            ).repeat(self.batch_size, 1, 1)#[:, :num_query_tokens, :]
+            ).repeat(
+                self.batch_size, 1, 1
+            )  # [:, :num_query_tokens, :]
 
             # Create object queries
             # added to queries and keys in each cross-attention layer
@@ -169,13 +196,11 @@ class DETRIntegration(torch.nn.Module):
                 dtype=projected_queries.dtype,
             )
 
-
             # inputs_embeds = torch.zeros_like(projected_queries)
 
             # object_queries = DetrSinePositionEmbedding(128, normalize=True)(
             #     projected_queries, torch.ones_like(image_features[:, :, 0])
             # )
-
 
             # Run decoder
             decoder_outputs = self.decoder(
@@ -197,7 +222,11 @@ class DETRIntegration(torch.nn.Module):
             logits = self.class_labels_classifier(decoder_output)
             pred_boxes = self.bbox_predictor(decoder_output).sigmoid()
 
-        return logits, pred_boxes
+        return DETROutput(
+            logits=logits,
+            pred_boxes=pred_boxes,
+            last_hidden_state=decoder_output,
+        )
 
     def loss(
         self,
@@ -218,6 +247,7 @@ class DETRIntegration(torch.nn.Module):
             outputs_coord=outputs_coord,
             sized_based_matching=self.config.bbox_ordering == "size_desc",
         )
+
 
 class FullDETRIntegration(torch.nn.Module):
     """
@@ -310,18 +340,22 @@ class FullDETRIntegration(torch.nn.Module):
         # Project queries to DETR dimension
         projected_queries = self.input_projection(sequence_output_queries)
 
-
-        pixel_values = pixel_values.to(self.device) if pixel_values is not None else None
+        pixel_values = (
+            pixel_values.to(self.device) if pixel_values is not None else None
+        )
         output = self.detr_model.forward(
             pixel_values=pixel_values,
             inputs_embeds=projected_queries,  # Query embeddings from LLM
             return_dict=True,
         )
 
-        self.loss_value = output.loss if hasattr(output, 'loss') else None
+        self.loss_value = output.loss if hasattr(output, "loss") else None
 
-        return output.logits, output.pred_boxes
-
+        return DETROutput(
+            logits=output.logits,
+            pred_boxes=output.pred_boxes,
+            last_hidden_state=output.last_hidden_state,
+        )
 
     def loss(
         self,
@@ -343,6 +377,7 @@ class FullDETRIntegration(torch.nn.Module):
             outputs_coord=outputs_coord,
             sized_based_matching=self.config.bbox_ordering == "size_desc",
         )
+
 
 class DabDETRIntegration(torch.nn.Module):
     """
@@ -640,7 +675,11 @@ class DabDETRIntegration(torch.nn.Module):
 
         # print(logits, pred_boxes)
 
-        return logits, pred_boxes
+        return DETROutput(
+            logits=logits,
+            pred_boxes=pred_boxes,
+            last_hidden_state=None,
+        )
 
     def loss(
         self,
