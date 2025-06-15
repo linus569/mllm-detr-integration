@@ -165,6 +165,29 @@ class VisionLanguageModel(torch.nn.Module):
                 batch_size=self.config.batch_size,
                 device=self.config.device,
             )
+            if self.config.feedback_detr_to_llm:
+                log.info("Using feedback from DETR to LLM")
+                # assert (
+                #     self.query_tokens_id is not None
+                # ), "Query tokens ID must be provided for feedback from DETR to LLM"
+                # self.query_tokens_id = torch.tensor(
+                #     self.query_tokens_id, device=self.config.device
+                # )
+                self.projector_detr_llm = torch.nn.Sequential(
+                    torch.nn.Linear(
+                        self.detr_integration.detr_config.d_model,
+                        self.model.config.hidden_size,
+                    ),
+                    torch.nn.GELU(),
+                    torch.nn.Linear(
+                        self.model.config.hidden_size, self.model.config.hidden_size
+                    ),
+                )
+                self.matcher = HungarianMatcher(
+                    class_cost=self.detr_integration.detr_config.class_cost,
+                    bbox_cost=self.detr_integration.detr_config.bbox_cost,
+                    giou_cost=self.detr_integration.detr_config.giou_cost,
+                )
 
         if self.config.use_precompute:
             # delete image encoder and projector
@@ -307,7 +330,9 @@ class VisionLanguageModel(torch.nn.Module):
         # shape of image_features is (batch_size, (num_patches), num_image_tokens, token_size_text_encoder)
         return image_features, image_features_proj
 
-    def _use_detr_head(self, input_ids, outputs, image_features, pixel_values=None):
+    def _use_detr_head(
+        self, input_ids, outputs, image_features, pixel_values=None
+    ) -> DETROutput:
         return self.detr_integration.forward(
             input_ids=input_ids,
             outputs=outputs,
@@ -319,79 +344,133 @@ class VisionLanguageModel(torch.nn.Module):
 
     def feedback_detr_to_llm(
         self,
-        tokenizer,
-        pred_boxes,
-        class_names_str,
-        scores,
-        labels_pred,
+        indices,
+        last_hidden_states,
+        input_ids,
         inputs_embeds,
         attention_mask,
+        labels,
+        forward_pass=False,
     ):
-        threshold = 0.0
-
-        class_names = []
-        results = []
-        results_string_batch = []
-        for j in range(self.config.batch_size):
-            results_string = ""
-            class_names.append(
-                [
-                    (
-                        class_names_str[i.item()]
-                        if i < len(class_names_str)
-                        else "unknown"
-                    )
-                    for i in labels_pred[j]
-                ]
+        # get the position of the query tokens in the input_ids
+        query_tokens_pos = (input_ids == self.query_tokens_id[0]).nonzero(
+            as_tuple=True
+        )[1]
+        if query_tokens_pos.numel() == 0:
+            raise ValueError(
+                "Query tokens not found in input_ids. Please provide query tokens ID."
             )
-            for s, l, b in zip(scores, labels_pred, pred_boxes):
-                score = s[s > threshold]
-                label = l[s > threshold]
-                box = b[s > threshold]
-                results.append({"scores": score, "labels": label, "boxes": box})
-                results_string += "scores: {}, labels: {}, boxes: {}".format(
-                    score.tolist(), label.tolist(), box.tolist()
+        # get the position after query tokens in the inputs_embeds
+        position_after_query_tokens = (
+            query_tokens_pos[-1] + self.config.num_query_tokens
+        )
+
+        new_inputs_embeds = []
+        new_attention_mask = []
+        new_labels = []
+
+        max_len_detr_tokens = max([len(source) for source in indices])
+
+        for i, source_idx in enumerate(indices):
+            # get the last hidden state for the current batch and source index
+            last_hidden_state = last_hidden_states[i, source_idx, :]
+            # project this to the input embeddings space using a projection layer
+            projected_last_hidden_state = self.projector_detr_llm(last_hidden_state)
+
+            # insert this into the inputs_embeds for the current batch, immediately after the query tokens but move back the values already there
+            len_detr_tokens = projected_last_hidden_state.shape[0]
+
+            padding_inputs_embed = self.model.get_input_embeddings()(
+                torch.tensor(
+                    [151643] * (max_len_detr_tokens - len_detr_tokens),
+                    device=inputs_embeds.device,
+                    dtype=input_ids.dtype,
+                ).unsqueeze(0)
+            )
+            new_inputs_embeds.append(
+                torch.cat(
+                    [
+                        (
+                            padding_inputs_embed.squeeze(0)
+                            if not forward_pass
+                            else torch.empty(size=(0,))
+                        ),
+                        inputs_embeds[i, :position_after_query_tokens],
+                        projected_last_hidden_state,
+                        inputs_embeds[i, position_after_query_tokens:],
+                        # pad with embedding of input_id 151643
+                        (
+                            padding_inputs_embed.squeeze(0)
+                            if forward_pass
+                            else torch.empty(size=(0,))
+                        ),
+                    ],
+                    dim=0,
+                )
+            )
+
+            padding_attention = torch.zeros(
+                max_len_detr_tokens - len_detr_tokens,
+                device=attention_mask.device,
+                dtype=attention_mask.dtype,
+            )
+            new_attention_mask.append(
+                torch.cat(
+                    [
+                        (
+                            padding_attention
+                            if not forward_pass
+                            else torch.empty(size=(0,))
+                        ),
+                        attention_mask[i, :position_after_query_tokens],
+                        torch.ones(len_detr_tokens, device=attention_mask.device),
+                        attention_mask[i, position_after_query_tokens:],
+                        padding_attention if forward_pass else torch.empty(size=(0,)),
+                    ],
+                    dim=0,
+                )
+            )
+
+            if forward_pass:
+                padding_labels = torch.full(
+                    (max_len_detr_tokens - len_detr_tokens,),
+                    -100,
+                    device=labels.device,
+                    dtype=labels.dtype,
+                )
+                new_labels.append(
+                    torch.cat(
+                        [
+                            (
+                                padding_labels
+                                if not forward_pass
+                                else torch.empty(size=(0,))
+                            ),
+                            labels[i, :position_after_query_tokens],
+                            torch.full((len_detr_tokens,), -100, device=labels.device),
+                            labels[i, position_after_query_tokens:],
+                            padding_labels if forward_pass else torch.empty(size=(0,)),
+                        ],
+                        dim=0,
+                    )
                 )
 
-            results_string_batch.append(results_string)
+        # TODO: fix creating padding for inputs_embeds, and check for attention_mask and labels for correctness
+        # move implementation to funciton and switch padding position to front of arrays for calls form generate
 
-            # log.info(results_string_batch)
-
-            # tokenize and embed results_string
-            # or use some kind of projection layer to get embeddings that i can add t input embeddings, and feed back to model
-        tokenized_results = tokenizer(
-            results_string_batch,
-            return_tensors="pt",
-            padding="max_length",
-            truncation=True,
-            max_length=1024,
+        inputs_embeds = torch.stack(new_inputs_embeds).to(
+            inputs_embeds.device, inputs_embeds.dtype
+        )
+        attention_mask = torch.stack(new_attention_mask).to(
+            attention_mask.device, attention_mask.dtype
+        )
+        labels = (
+            torch.stack(new_labels).to(labels.device, labels.dtype)
+            if forward_pass
+            else None
         )
 
-        # TODO: may put before the prompt that the llm should put its response
-
-        inputs_embeds_results = torch.stack(
-            [
-                torch.tensor(s).to(self.model.device)
-                for s in tokenized_results["input_ids"]
-            ]
-        )
-        embedding_results_string = self.model.get_input_embeddings()(
-            inputs_embeds_results
-        )
-        inputs_embeds = torch.cat([inputs_embeds, embedding_results_string], dim=1)
-
-        attention_mask = torch.cat(
-            [
-                attention_mask,
-                torch.ones(
-                    embedding_results_string.shape[0],
-                    embedding_results_string.shape[1],
-                ).to(self.model.device),
-            ],
-            dim=1,
-        )
-
-        return attention_mask, inputs_embeds, embedding_results_string
+        return inputs_embeds, attention_mask, labels
 
     def forward(
         self,
@@ -485,34 +564,42 @@ class VisionLanguageModel(torch.nn.Module):
         loss = None
         if labels is not None:
             if self.config.detr_loss and detr_labels is not None:
-                logits, pred_boxes = self._use_detr_head(
+                detr_output = self._use_detr_head(
                     input_ids, outputs, image_features, pixel_values
                 )
 
                 loss = self.detr_integration.loss(
-                    logits=logits,
+                    logits=detr_output.logits,
                     labels=detr_labels,
-                    pred_boxes=pred_boxes,
+                    pred_boxes=detr_output.pred_boxes,
                 )
 
                 if self.config.feedback_detr_to_llm:
-                    # get pred_boxes with class name from logits and pred_boxes
-                    class_names_str = self.detr_integration.detr_config.id2label
-                    prob = torch.nn.functional.softmax(logits, -1)
-                    scores, labels_pred = prob[..., :-1].max(-1)
-                    attention_mask, inputs_embeds, embedding_results_string = (
-                        self.feedback_detr_to_llm(
-                            tokenizer,
-                            pred_boxes,
-                            class_names_str,
-                            scores,
-                            labels_pred,
-                            inputs_embeds,
-                            attention_mask,
-                        )
+                    # Use LLM with information from DETR head for predictions
+
+                    # use hungarian matcher to match logits and pred_boxes with detr_labels
+                    # returns tuples of source indices and target indices
+                    matcher_input = {
+                        "logits": detr_output.logits,
+                        "pred_boxes": detr_output.pred_boxes,
+                    }
+                    # indices is a list of tuples, where each tuple contains the source indices and target indices
+                    indices = self.matcher(matcher_input, detr_labels)
+                    # only take source indices, as we only need to extend inputs_embeds and attention_mask
+                    indices = [source_idx.tolist() for source_idx, _ in indices]
+
+                    # extend inputs_embed, attention_mask and labels with the projected last hidden states of DETR forward pass
+                    inputs_embeds, attention_mask, labels = self.feedback_detr_to_llm(
+                        indices=indices,
+                        last_hidden_states=detr_output.last_hidden_states,
+                        input_ids=input_ids,
+                        inputs_embeds=inputs_embeds,
+                        attention_mask=attention_mask,
+                        labels=labels,
+                        forward_pass=True,
                     )
 
-                    # 2nd run through llm with longer input embeddings
+                    # 2nd run through llm with extended input embeddings
                     outputs = self.model(
                         attention_mask=attention_mask,
                         position_ids=position_ids,
@@ -522,16 +609,6 @@ class VisionLanguageModel(torch.nn.Module):
                         output_attentions=output_attentions,
                         output_hidden_states=output_hidden_states,
                         return_dict=return_dict,
-                    )
-
-                    labels = torch.cat(
-                        [
-                            labels,
-                            torch.full(embedding_results_string.shape[:2], -100).to(
-                                self.model.device
-                            ),
-                        ],
-                        dim=1,
                     )
 
                     # use detr loss, already calculated and cross_entropy loss on 2nd run through llm
@@ -600,7 +677,7 @@ class VisionLanguageModel(torch.nn.Module):
         if self.config.detr_loss:
             assert self.model.eval()
             # Use DETR head to get predictions
-            # LLM forward pass
+            # LLM forward pass to get query embeddings for DETR
             outputs = self.model(
                 attention_mask=attention_mask,
                 position_ids=None,
@@ -612,33 +689,47 @@ class VisionLanguageModel(torch.nn.Module):
                 return_dict=None,
             )
             # DETR head forward pass to get predictions
-            logits, pred_boxes = self._use_detr_head(
+            detr_output = self._use_detr_head(
                 input_ids, outputs, image_features, pixel_values
             )
+
+            # outputs if not using feedback from DETR to LLM
             outputs = {
-                "pred_boxes": pred_boxes,
-                "pred_logits": logits,
+                "pred_boxes": detr_output.pred_boxes,
+                "pred_logits": detr_output.logits,
             }
 
             if self.config.feedback_detr_to_llm:
                 # Use LLM with information from DETR head for predictions
-                # get pred_boxes with class name from logits and pred_boxes
-                class_names_str = self.detr_integration.detr_config.id2label
-                prob = torch.nn.functional.softmax(logits, -1)
+
+                # get probabilities, scores and labels from logits
+                # class_names_str = self.detr_integration.detr_config.id2label
+                prob = torch.nn.functional.softmax(detr_output.logits, -1)
                 scores, labels_pred = prob[..., :-1].max(-1)
-                attention_mask, inputs_embeds, embedding_results_string = (
-                    self.feedback_detr_to_llm(
-                        tokenizer,
-                        pred_boxes,
-                        class_names_str,
-                        scores,
-                        labels_pred,
-                        inputs_embeds,
-                        attention_mask,
-                    )
+
+                # filter scores above threshold, get indices and create mask
+                threshold = 0.5
+                mask = scores > threshold
+                indices = mask.nonzero()
+                # get a list of indices for each batch
+                indices = [
+                    indices[indices[:, 0] == i, 1].tolist()
+                    for i in range(mask.shape[0])
+                ]
+
+                # extend inputs_embeds and attention_mask for feedback to LLM
+                # with the projected last hidden states of DETR forward pass
+                inputs_embeds, attention_mask, _ = self.feedback_detr_to_llm(
+                    indices=indices,
+                    last_hidden_states=detr_output.last_hidden_states,
+                    input_ids=input_ids,
+                    inputs_embeds=inputs_embeds,
+                    attention_mask=attention_mask,
+                    labels=None,
+                    forward_pass=False,
                 )
 
-                # 2nd run through llm with longer input embeddings
+                # 2nd run through llm with extended inputs_embeds and attention_mask
                 outputs = super(LlavaQwenForCausalLM, self.model).generate(
                     inputs_embeds=inputs_embeds,
                     max_new_tokens=max_new_tokens,
