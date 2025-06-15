@@ -342,7 +342,7 @@ class VisionLanguageModel(torch.nn.Module):
     def feedback_detr_to_llm(
         self,
         indices,
-        last_hidden_states,
+        last_hidden_state,
         input_ids,
         inputs_embeds,
         attention_mask,
@@ -370,7 +370,7 @@ class VisionLanguageModel(torch.nn.Module):
 
         for i, source_idx in enumerate(indices):
             # get the last hidden state for the current batch and source index
-            last_hidden_state = last_hidden_states[i, source_idx, :]
+            last_hidden_state = last_hidden_state[i, source_idx, :]
             # project this to the input embeddings space using a projection layer
             projected_last_hidden_state = self.projector_detr_llm(last_hidden_state)
 
@@ -390,7 +390,9 @@ class VisionLanguageModel(torch.nn.Module):
                         (
                             padding_inputs_embed.squeeze(0)
                             if not forward_pass
-                            else torch.empty(size=(0,))
+                            else torch.empty(size=(0,)).to(
+                                inputs_embeds.device, inputs_embeds.dtype
+                            )
                         ),
                         inputs_embeds[i, :position_after_query_tokens],
                         projected_last_hidden_state,
@@ -399,7 +401,9 @@ class VisionLanguageModel(torch.nn.Module):
                         (
                             padding_inputs_embed.squeeze(0)
                             if forward_pass
-                            else torch.empty(size=(0,))
+                            else torch.empty(size=(0,)).to(
+                                inputs_embeds.device, inputs_embeds.dtype
+                            )
                         ),
                     ],
                     dim=0,
@@ -417,12 +421,16 @@ class VisionLanguageModel(torch.nn.Module):
                         (
                             padding_attention
                             if not forward_pass
-                            else torch.empty(size=(0,))
+                            else torch.empty(size=(0,)).to(
+                                attention_mask.device, attention_mask.dtype
+                            )
                         ),
                         attention_mask[i, :position_after_query_tokens],
                         torch.ones(len_detr_tokens, device=attention_mask.device),
                         attention_mask[i, position_after_query_tokens:],
-                        padding_attention if forward_pass else torch.empty(size=(0,)),
+                        padding_attention if forward_pass else torch.empty(size=(0,)).to(
+                            attention_mask.device, attention_mask.dtype
+                        ),
                     ],
                     dim=0,
                 )
@@ -441,12 +449,16 @@ class VisionLanguageModel(torch.nn.Module):
                             (
                                 padding_labels
                                 if not forward_pass
-                                else torch.empty(size=(0,))
+                                else torch.empty(size=(0,)).to(
+                                    labels.device, labels.dtype
+                                )
                             ),
                             labels[i, :position_after_query_tokens],
                             torch.full((len_detr_tokens,), -100, device=labels.device),
                             labels[i, position_after_query_tokens:],
-                            padding_labels if forward_pass else torch.empty(size=(0,)),
+                            padding_labels if forward_pass else torch.empty(size=(0,)).to(
+                                labels.device, labels.dtype
+                            ),
                         ],
                         dim=0,
                     )
@@ -588,7 +600,7 @@ class VisionLanguageModel(torch.nn.Module):
                     # extend inputs_embed, attention_mask and labels with the projected last hidden states of DETR forward pass
                     inputs_embeds, attention_mask, labels = self.feedback_detr_to_llm(
                         indices=indices,
-                        last_hidden_states=detr_output.last_hidden_states,
+                        last_hidden_state=detr_output.last_hidden_state,
                         input_ids=input_ids,
                         inputs_embeds=inputs_embeds,
                         attention_mask=attention_mask,
@@ -718,7 +730,7 @@ class VisionLanguageModel(torch.nn.Module):
                 # with the projected last hidden states of DETR forward pass
                 inputs_embeds, attention_mask, _ = self.feedback_detr_to_llm(
                     indices=indices,
-                    last_hidden_states=detr_output.last_hidden_states,
+                    last_hidden_state=detr_output.last_hidden_state,
                     input_ids=input_ids,
                     inputs_embeds=inputs_embeds,
                     attention_mask=attention_mask,
