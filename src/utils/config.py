@@ -95,6 +95,7 @@ class ExperimentConfig:
 
     add_special_tokens: bool = True
     freeze_model: bool = True
+    train_image_encoder: bool = False
 
     bbox_ordering: str = "none"  # Options: "none", "random", "size_desc"
 

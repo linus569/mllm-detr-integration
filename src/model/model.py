@@ -74,13 +74,6 @@ class VisionLanguageModel(torch.nn.Module):
             config=self.config,
             model=self.model if self.config.image_encoder.name == "siglip" else None,
         )
-        # self.image_encoder.to(self.config.dtype)
-
-        # Check if image encoder is frozen
-        for param in self.image_encoder.encoder.parameters():
-            assert (
-                param.requires_grad == False
-            ), "Image encoder parameters should be frozen"
 
         llm_embed_dim = self.model.config.hidden_size
         image_encoder_embed_dim = self.image_encoder.get_output_dim()
@@ -98,9 +91,13 @@ class VisionLanguageModel(torch.nn.Module):
             f"Image encoder {self.config.image_encoder.name} initialized with output dim {image_encoder_embed_dim} -> {llm_embed_dim}"
         )
 
+        # Un/freeze image_encoder depending on config
+        for param in self.image_encoder.encoder.parameters():
+            param.requires_grad = self.config.train_image_encoder
+
         # Un/freeze LLM model depending on config
         for param in self.model.parameters():
-            param.requires_grad = not config.freeze_model
+            param.requires_grad = not self.config.freeze_model
 
         # Unfreeze projector parameters for fine-tuning
         for param in self.projector.parameters():
