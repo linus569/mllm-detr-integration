@@ -370,9 +370,9 @@ class VisionLanguageModel(torch.nn.Module):
 
         for i, source_idx in enumerate(indices):
             # get the last hidden state for the current batch and source index
-            last_hidden_state = last_hidden_state[i, source_idx, :]
+            filtered_detr_state = last_hidden_state[i, source_idx, :]
             # project this to the input embeddings space using a projection layer
-            projected_last_hidden_state = self.projector_detr_llm(last_hidden_state)
+            projected_last_hidden_state = self.projector_detr_llm(filtered_detr_state)
 
             # insert this into the inputs_embeds for the current batch, immediately after the query tokens but move back the values already there
             len_detr_tokens = projected_last_hidden_state.shape[0]
