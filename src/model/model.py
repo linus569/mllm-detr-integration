@@ -26,6 +26,8 @@ from model.partial_frozen_embeddings import (
 )
 from utils.config import ExperimentConfig
 
+from peft import prepare_model_for_kbit_training, get_peft_model, LoraConfig, TaskType
+
 log = logging.getLogger(__name__)
 
 dict_image_encoders = {
@@ -65,7 +67,7 @@ class VisionLanguageModel(torch.nn.Module):
         # Get model components
         # device_map="auto", prints warning, could be ignored https://github.com/huggingface/transformers/issues/31544
         # torch_dtype=self.torch_dtype, attn_implementation=attn_implementation,
-        self.model = LlavaQwenForCausalLM.from_pretrained(self.config.model_name)
+        self.model = LlavaQwenForCausalLM.from_pretrained(self.config.model_name) #, torch_dtype=self.config.torch_dtype
 
         # Get image encoder based on config
         self.image_encoder: BaseImageEncoder
@@ -74,10 +76,14 @@ class VisionLanguageModel(torch.nn.Module):
             config=self.config,
             model=self.model if self.config.image_encoder.name == "siglip" else None,
         )
+        
+        # Delete vision tower and resampler from model as it is saved in self.image_encoder
+        del self.model.model.vision_tower
+        del self.model.model.vision_resampler
 
+        # Projection layer from image encoder to LLM embed size
         llm_embed_dim = self.model.config.hidden_size
         image_encoder_embed_dim = self.image_encoder.get_output_dim()
-
         if "siglip" in self.config.image_encoder.name:
             self.projector = self.model.get_model().mm_projector
         else:
@@ -86,18 +92,29 @@ class VisionLanguageModel(torch.nn.Module):
                 torch.nn.GELU(),
                 torch.nn.Linear(llm_embed_dim, llm_embed_dim),
             )
-
         log.info(
             f"Image encoder {self.config.image_encoder.name} initialized with output dim {image_encoder_embed_dim} -> {llm_embed_dim}"
         )
 
+        if self.config.lora: # TODO: add config option for this
+            lora_config = LoraConfig(
+                r=self.config.lora_rank,
+                target_modules=self.config.lora_target_modules,
+                task_type=TaskType.CAUSAL_LM,
+                lora_alpha=self.config.lora_alpha,
+                lora_dropout=self.config.lora_dropout,
+            )
+            # self.model = prepare_model_for_kbit_training
+            self.model = get_peft_model(self.model, lora_config)
+            self.model.print_trainable_parameters()
+        else: 
+            # Un/freeze LLM model depending on config if not using LoRA
+            for param in self.model.parameters():
+                param.requires_grad = not self.config.freeze_model
+
         # Un/freeze image_encoder depending on config
         for param in self.image_encoder.encoder.parameters():
             param.requires_grad = self.config.train_image_encoder
-
-        # Un/freeze LLM model depending on config
-        for param in self.model.parameters():
-            param.requires_grad = not self.config.freeze_model
 
         # Unfreeze projector parameters for fine-tuning
         for param in self.projector.parameters():
@@ -190,8 +207,6 @@ class VisionLanguageModel(torch.nn.Module):
             # delete image encoder and projector
             # TODO: delete self.model.model.vision_tower also during normal runs as I use self.image_encoder
             del self.image_encoder
-            del self.model.model.vision_tower
-            del self.model.model.vision_resampler
 
         log.info("Model initialized")
 
@@ -737,9 +752,12 @@ class VisionLanguageModel(torch.nn.Module):
                     labels=None,
                     forward_pass=False,
                 )
-
+                if hasattr(self.model, "base_model"):
+                    llava_model = self.model.base_model.model
+                else:
+                    llava_model = self.model
                 # 2nd run through llm with extended inputs_embeds and attention_mask
-                outputs = super(LlavaQwenForCausalLM, self.model).generate(
+                outputs = super(LlavaQwenForCausalLM, llava_model).generate(
                     inputs_embeds=inputs_embeds,
                     max_new_tokens=max_new_tokens,
                     attention_mask=attention_mask,
@@ -747,8 +765,12 @@ class VisionLanguageModel(torch.nn.Module):
                     **kwargs,
                 )
         else:
+            if hasattr(self.model, "base_model"):
+                llava_model = self.model.base_model.model
+            else:
+                llava_model = self.model
             # direcly call generate on superclass as inputs_embeds is already created and class implementation does not support this
-            outputs = super(LlavaQwenForCausalLM, self.model).generate(
+            outputs = super(LlavaQwenForCausalLM, llava_model).generate(
                 inputs_embeds=inputs_embeds,
                 max_new_tokens=max_new_tokens,
                 attention_mask=attention_mask,
