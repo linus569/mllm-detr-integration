@@ -123,6 +123,11 @@ class DETRIntegration(torch.nn.Module):
             for param in component.parameters():
                 param.requires_grad = True
 
+        for param in self.decoder.parameters():
+            param.requires_grad = self.config.train_detr
+        for param in self.encoder.parameters():
+            param.requires_grad = self.config.train_detr
+
         if self.config.bbox_ordering == "size_desc":
             log.warning(
                 "Bbox ordering is set to size_desc - DETR loss will be using size based matching instead of hungarian matching."
@@ -300,7 +305,7 @@ class FullDETRIntegration(torch.nn.Module):
             if "backbone" in name:
                 param.requires_grad = False
             else:
-                param.requires_grad = True
+                param.requires_grad = self.config.train_detr
 
         if self.config.bbox_ordering == "size_desc":
             log.warning(

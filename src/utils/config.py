@@ -104,6 +104,7 @@ class ExperimentConfig:
     num_query_tokens: int = 0
     detr_loss: bool = False
     add_detr_layers: bool = False
+    train_detr: bool = True
 
     # precompute parameters
     use_precompute: bool = False
