@@ -147,11 +147,11 @@ class DETRIntegration(torch.nn.Module):
 
         # Extract query tokens
         sequence_output_queries = []
-        for ids in input_ids:
+        for idx, ids in enumerate(input_ids):
             query_position = torch.where(ids == query_tokens_id[0])[0][0]
             sequence_output_queries.append(
                 sequence_output[
-                    0, query_position : query_position + num_query_tokens, :
+                    idx, query_position : query_position + num_query_tokens, :
                 ].unsqueeze(0)
             )
         sequence_output_queries = torch.cat(sequence_output_queries, dim=0)
@@ -328,11 +328,11 @@ class FullDETRIntegration(torch.nn.Module):
 
         # Extract query tokens
         sequence_output_queries = []
-        for ids in input_ids:
+        for idx, ids in enumerate(input_ids):
             query_position = torch.where(ids == query_tokens_id[0])[0][0]
             sequence_output_queries.append(
                 sequence_output[
-                    0, query_position : query_position + num_query_tokens, :
+                    idx, query_position : query_position + num_query_tokens, :
                 ].unsqueeze(0)
             )
         sequence_output_queries = torch.cat(sequence_output_queries, dim=0)
@@ -496,11 +496,11 @@ class DabDETRIntegration(torch.nn.Module):
 
         # Extract query tokens
         sequence_output_queries = []
-        for ids in input_ids:
+        for idx, ids in enumerate(input_ids):
             query_position = torch.where(ids == query_tokens_id[0])[0][0]
             sequence_output_queries.append(
                 sequence_output[
-                    0, query_position : query_position + num_query_tokens, :
+                    idx, query_position : query_position + num_query_tokens, :
                 ].unsqueeze(0)
             )
         sequence_output_queries = torch.cat(sequence_output_queries, dim=0)
