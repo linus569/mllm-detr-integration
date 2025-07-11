@@ -203,6 +203,11 @@ class VisionLanguageModel(torch.nn.Module):
                     giou_cost=self.detr_integration.detr_config.giou_cost,
                 )
 
+                for param in self.projector_detr_llm.parameters():
+                    assert param.requires_grad, (
+                        "Projector for DETR to LLM should be trainable"
+                    )
+
         if self.config.use_precompute:
             # delete image encoder and projector
             # TODO: delete self.model.model.vision_tower also during normal runs as I use self.image_encoder
@@ -572,6 +577,12 @@ class VisionLanguageModel(torch.nn.Module):
         # Hidden states needed for DETR loss
         if self.config.detr_loss:
             output_hidden_states = True
+
+        if (
+            hasattr(self.model, "gradient_checkpointing")
+            and self.model.gradient_checkpointing
+        ):
+            use_cache = False
 
         # LLM forward pass
         outputs = self.model(
