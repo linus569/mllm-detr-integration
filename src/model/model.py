@@ -763,7 +763,8 @@ class VisionLanguageModel(torch.nn.Module):
                     labels=None,
                     forward_pass=False,
                 )
-                if hasattr(self.model, "base_model"):
+                # check if model is peft lora model
+                if self.config.lora:
                     llava_model = self.model.base_model.model
                 else:
                     llava_model = self.model
@@ -776,7 +777,7 @@ class VisionLanguageModel(torch.nn.Module):
                     **kwargs,
                 )
         else:
-            if hasattr(self.model, "base_model"):
+            if self.config.lora:
                 llava_model = self.model.base_model.model
             else:
                 llava_model = self.model
