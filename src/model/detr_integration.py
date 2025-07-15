@@ -348,18 +348,99 @@ class FullDETRIntegration(torch.nn.Module):
         pixel_values = (
             pixel_values.to(self.device) if pixel_values is not None else None
         )
-        output = self.detr_model.forward(
-            pixel_values=pixel_values,
-            inputs_embeds=projected_queries,  # Query embeddings from LLM
-            return_dict=True,
+        # output = self.detr_model.forward(
+        #     pixel_values=pixel_values,
+        #     inputs_embeds=projected_queries,  # Query embeddings from LLM
+        #     return_dict=True,
+        # )
+
+        # self.loss_value = output.loss if hasattr(output, 'loss') else None
+
+        # return DETROutput(
+        #     logits=output.logits,
+        #     pred_boxes=output.pred_boxes,
+        #     last_hidden_state=output.last_hidden_state,
+        # )
+
+        output_attentions = self.detr_model.model.config.output_attentions
+        output_hidden_states = self.detr_model.model.config.output_hidden_states
+        return_dict = self.detr_model.model.config.use_return_dict
+
+        batch_size, num_channels, height, width = pixel_values.shape
+        device = pixel_values.device
+
+        pixel_mask = torch.ones(((batch_size, height, width)), device=device)
+
+        # First, sent pixel_values + pixel_mask through Backbone to obtain the features
+        # pixel_values should be of shape (batch_size, num_channels, height, width)
+        # pixel_mask should be of shape (batch_size, height, width)
+        features, object_queries_list = self.detr_model.model.backbone(
+            pixel_values, pixel_mask
         )
 
-        self.loss_value = output.loss if hasattr(output, "loss") else None
+        # get final feature map and downsampled mask
+        feature_map, mask = features[-1]
+
+        if mask is None:
+            raise ValueError("Backbone does not return downsampled pixel mask")
+
+        # Second, apply 1x1 convolution to reduce the channel dimension to d_model (256 by default)
+        projected_feature_map = self.detr_model.model.input_projection(feature_map)
+
+        # Third, flatten the feature map + position embeddings of shape NxCxHxW to NxCxHW, and permute it to NxHWxC
+        # In other words, turn their shape into (batch_size, sequence_length, hidden_size)
+        flattened_features = projected_feature_map.flatten(2).permute(0, 2, 1)
+        object_queries = object_queries_list[-1].flatten(2).permute(0, 2, 1)
+
+        flattened_mask = mask.flatten(1)
+
+        # Fourth, sent flattened_features + flattened_mask + position embeddings through encoder
+        # flattened_features is a Tensor of shape (batch_size, heigth*width, hidden_size)
+        # flattened_mask is a Tensor of shape (batch_size, heigth*width)
+        # if encoder_outputs is None:
+        encoder_outputs = self.detr_model.model.encoder(
+            inputs_embeds=flattened_features,
+            attention_mask=flattened_mask,
+            object_queries=object_queries,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+        # If the user passed a tuple for encoder_outputs, we wrap it in a BaseModelOutput when return_dict=True
+        # removed, not needed
+
+        # Fifth, sent query embeddings + object_queries through the decoder (which is conditioned on the encoder output)
+        query_position_embeddings = (
+            self.detr_model.model.query_position_embeddings.weight.unsqueeze(0).repeat(
+                batch_size, 1, 1
+            )
+        )
+        queries = torch.zeros_like(query_position_embeddings)
+        queries = projected_queries
+
+        # decoder outputs consists of (dec_features, dec_hidden, dec_attn)
+        decoder_outputs = self.detr_model.model.decoder(
+            inputs_embeds=queries,
+            attention_mask=None,
+            object_queries=object_queries,
+            query_position_embeddings=query_position_embeddings,
+            encoder_hidden_states=encoder_outputs[0],
+            encoder_attention_mask=flattened_mask,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+        sequence_output = decoder_outputs[0]
+
+        # class logits + predicted bounding boxes
+        logits = self.detr_model.class_labels_classifier(sequence_output)
+        pred_boxes = self.detr_model.bbox_predictor(sequence_output).sigmoid()
 
         return DETROutput(
-            logits=output.logits,
-            pred_boxes=output.pred_boxes,
-            last_hidden_state=output.last_hidden_state,
+            logits=logits,
+            pred_boxes=pred_boxes,
+            last_hidden_state=decoder_outputs.last_hidden_state,
         )
 
     def loss(
