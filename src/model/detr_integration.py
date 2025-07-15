@@ -168,6 +168,7 @@ class DETRIntegration(torch.nn.Module):
             # Simple classification and box prediction
             logits = self.class_labels_classifier(projected_queries)
             pred_boxes = self.bbox_predictor(projected_queries).sigmoid()
+            decoder_output = None
         else:
             # Use DETR layers for processing
             # Project image features to DETR dimension,
