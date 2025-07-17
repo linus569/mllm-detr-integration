@@ -381,6 +381,9 @@ class VisionLanguageModel(torch.nn.Module):
         position_after_query_tokens = (
             query_tokens_pos[-1] + self.config.num_query_tokens
         )
+        position_after_query_tokens_removed = position_after_query_tokens
+        if self.config.remove_query_tokens:
+            position_after_query_tokens_removed = position_after_query_tokens - self.config.num_query_tokens
 
         new_inputs_embeds = []
         new_attention_mask = []
@@ -414,7 +417,7 @@ class VisionLanguageModel(torch.nn.Module):
                                 inputs_embeds.device, inputs_embeds.dtype
                             )
                         ),
-                        inputs_embeds[i, :position_after_query_tokens],
+                        inputs_embeds[i, :position_after_query_tokens_removed],
                         projected_last_hidden_state,
                         inputs_embeds[i, position_after_query_tokens:],
                         # pad with embedding of input_id 151643
@@ -445,7 +448,7 @@ class VisionLanguageModel(torch.nn.Module):
                                 attention_mask.device, attention_mask.dtype
                             )
                         ),
-                        attention_mask[i, :position_after_query_tokens],
+                        attention_mask[i, :position_after_query_tokens_removed],
                         torch.ones(len_detr_tokens, device=attention_mask.device),
                         attention_mask[i, position_after_query_tokens:],
                         padding_attention if forward_pass else torch.empty(size=(0,)).to(
@@ -473,7 +476,7 @@ class VisionLanguageModel(torch.nn.Module):
                                     labels.device, labels.dtype
                                 )
                             ),
-                            labels[i, :position_after_query_tokens],
+                            labels[i, :position_after_query_tokens_removed],
                             torch.full((len_detr_tokens,), -100, device=labels.device),
                             labels[i, position_after_query_tokens:],
                             padding_labels if forward_pass else torch.empty(size=(0,)).to(
