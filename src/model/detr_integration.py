@@ -517,6 +517,7 @@ class DabDETRIntegration(torch.nn.Module):
         )
 
         self.detr_config = detr_model.config
+        self.detr_config.d_model = self.detr_config.hidden_size
 
         # Create DETR layer to use on LLM hidden states
         self.decoder = detr_model.model.decoder
@@ -764,7 +765,7 @@ class DabDETRIntegration(torch.nn.Module):
         return DETROutput(
             logits=logits,
             pred_boxes=pred_boxes,
-            last_hidden_state=None,
+            last_hidden_state=decoder_outputs[0],
         )
 
     def loss(
