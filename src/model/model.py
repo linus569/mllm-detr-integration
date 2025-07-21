@@ -3,6 +3,7 @@ from typing import List, Optional, Tuple, Union
 
 import torch
 from llava.model.language_model.llava_qwen import LlavaQwenForCausalLM
+from peft import LoraConfig, TaskType, get_peft_model
 from transformers import AutoModel, DetrForObjectDetection
 from transformers.loss.loss_for_object_detection import HungarianMatcher
 from transformers.modeling_outputs import CausalLMOutputWithPast
@@ -25,8 +26,6 @@ from model.partial_frozen_embeddings import (
     PartiallyFrozenLMHead,
 )
 from utils.config import ExperimentConfig
-
-from peft import prepare_model_for_kbit_training, get_peft_model, LoraConfig, TaskType
 
 log = logging.getLogger(__name__)
 
@@ -67,7 +66,9 @@ class VisionLanguageModel(torch.nn.Module):
         # Get model components
         # device_map="auto", prints warning, could be ignored https://github.com/huggingface/transformers/issues/31544
         # torch_dtype=self.torch_dtype, attn_implementation=attn_implementation,
-        self.model = LlavaQwenForCausalLM.from_pretrained(self.config.model_name) #, torch_dtype=self.config.torch_dtype
+        self.model = LlavaQwenForCausalLM.from_pretrained(
+            self.config.model_name
+        )  # , torch_dtype=self.config.torch_dtype
 
         # Get image encoder based on config
         self.image_encoder: BaseImageEncoder
@@ -76,7 +77,7 @@ class VisionLanguageModel(torch.nn.Module):
             config=self.config,
             model=self.model if self.config.image_encoder.name == "siglip" else None,
         )
-        
+
         # Delete vision tower and resampler from model as it is saved in self.image_encoder
         del self.model.model.vision_tower
         del self.model.model.vision_resampler
@@ -96,7 +97,7 @@ class VisionLanguageModel(torch.nn.Module):
             f"Image encoder {self.config.image_encoder.name} initialized with output dim {image_encoder_embed_dim} -> {llm_embed_dim}"
         )
 
-        if self.config.lora: # TODO: add config option for this
+        if self.config.lora:  # TODO: add config option for this
             lora_config = LoraConfig(
                 r=self.config.lora_rank,
                 target_modules=self.config.lora_target_modules,
@@ -107,7 +108,7 @@ class VisionLanguageModel(torch.nn.Module):
             # self.model = prepare_model_for_kbit_training
             self.model = get_peft_model(self.model, lora_config)
             self.model.print_trainable_parameters()
-        else: 
+        else:
             # Un/freeze LLM model depending on config if not using LoRA
             for param in self.model.parameters():
                 param.requires_grad = not self.config.freeze_model
@@ -204,9 +205,9 @@ class VisionLanguageModel(torch.nn.Module):
                 )
 
                 for param in self.projector_detr_llm.parameters():
-                    assert param.requires_grad, (
-                        "Projector for DETR to LLM should be trainable"
-                    )
+                    assert (
+                        param.requires_grad
+                    ), "Projector for DETR to LLM should be trainable"
 
         if self.config.use_precompute:
             # delete image encoder and projector
@@ -249,12 +250,22 @@ class VisionLanguageModel(torch.nn.Module):
                 keep_vars=keep_vars,
             )
 
+        lora_state_dict = {}
+        if self.config.lora:
+            from peft import get_peft_model_state_dict
+
+            lora_state_dict = get_peft_model_state_dict(self.model, adapter_name="lora")
+            lora_state_dict = {
+                f"{prefix}lora.{k}": v for k, v in lora_state_dict.items()
+            }
+
         return {
             **proj_state_dict,
             **input_emb_state_dict,
             **output_emb_state_dict,
             **model_state_dict,
             **detr_int_state_dict,
+            **lora_state_dict,
         }
 
     def load_state_dict(self, state_dict, strict=True):
@@ -303,6 +314,20 @@ class VisionLanguageModel(torch.nn.Module):
             # 'lm_head.frozen_lm_head.weight', 'lm_head.trainable_lm_head.weight'],
             # Unexpected keys: ['model.embed_tokens.weight', 'lm_head.weight']
             # Loading embed tokens and lm_head extra with input and output embeddings
+
+        if self.config.lora:
+            from peft import set_peft_model_state_dict
+
+            lora_state_dict = {
+                k[len("lora.") :]: v
+                for k, v in state_dict.items()
+                if k.startswith("lora.")
+            }
+            missing_lora, unexpected_lora = set_peft_model_state_dict(
+                self.language_model, lora_state_dict, adapter_name="lora"
+            )
+            missing += missing_lora
+            unexpected += unexpected_lora
 
         return missing_keys, unexpected_keys
 
@@ -383,7 +408,9 @@ class VisionLanguageModel(torch.nn.Module):
         )
         position_after_query_tokens_removed = position_after_query_tokens
         if self.config.remove_query_tokens:
-            position_after_query_tokens_removed = position_after_query_tokens - self.config.num_query_tokens
+            position_after_query_tokens_removed = (
+                position_after_query_tokens - self.config.num_query_tokens
+            )
 
         new_inputs_embeds = []
         new_attention_mask = []
@@ -451,8 +478,12 @@ class VisionLanguageModel(torch.nn.Module):
                         attention_mask[i, :position_after_query_tokens_removed],
                         torch.ones(len_detr_tokens, device=attention_mask.device),
                         attention_mask[i, position_after_query_tokens:],
-                        padding_attention if forward_pass else torch.empty(size=(0,)).to(
-                            attention_mask.device, attention_mask.dtype
+                        (
+                            padding_attention
+                            if forward_pass
+                            else torch.empty(size=(0,)).to(
+                                attention_mask.device, attention_mask.dtype
+                            )
                         ),
                     ],
                     dim=0,
@@ -479,8 +510,12 @@ class VisionLanguageModel(torch.nn.Module):
                             labels[i, :position_after_query_tokens_removed],
                             torch.full((len_detr_tokens,), -100, device=labels.device),
                             labels[i, position_after_query_tokens:],
-                            padding_labels if forward_pass else torch.empty(size=(0,)).to(
-                                labels.device, labels.dtype
+                            (
+                                padding_labels
+                                if forward_pass
+                                else torch.empty(size=(0,)).to(
+                                    labels.device, labels.dtype
+                                )
                             ),
                         ],
                         dim=0,
