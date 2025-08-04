@@ -41,8 +41,8 @@ class TrainMetrics:
         self,
         predicted_boxes: List[Dict],
         target_boxes: List[Dict],
-        generated_text: List[str],
-        target_texts: List[str],
+        generated_text: List[str] = None,
+        target_texts: List[str] = None,
     ):
         """Update metrics with batch data.
 
@@ -55,26 +55,27 @@ class TrainMetrics:
         try:
             self.metric.update(predicted_boxes, target_boxes)
 
-            for pred, target in zip(generated_text, target_texts):
-                self.total_bleu_score += sentence_bleu(
-                    [target.split()],
-                    pred.split(),
-                    smoothing_function=SmoothingFunction().method1,
-                )
+            if generated_text is not None and target_texts is not None:
+                for pred, target in zip(generated_text, target_texts):
+                    self.total_bleu_score += sentence_bleu(
+                        [target.split()],
+                        pred.split(),
+                        smoothing_function=SmoothingFunction().method1,
+                    )
 
-                generated_text_tokens = nltk.word_tokenize(pred)
-                reference_texts_tokens = [nltk.word_tokenize(target)]
-                self.total_meteor_score += meteor_score(
-                    reference_texts_tokens, generated_text_tokens
-                )
+                    generated_text_tokens = nltk.word_tokenize(pred)
+                    reference_texts_tokens = [nltk.word_tokenize(target)]
+                    self.total_meteor_score += meteor_score(
+                        reference_texts_tokens, generated_text_tokens
+                    )
 
-                self.num_samples += 1
+                    self.num_samples += 1
         except Exception as e:
             log.error(f"Error updating metrics: {e}")
 
     def compute(self) -> Dict[str, float]:
         """Compute metrics.
-        
+
         Returns:
             Dict[str, float]: Computed metrics.
         """
@@ -87,7 +88,7 @@ class TrainMetrics:
         )
 
         # TODO: json accuaracy
-        
+
         return {
             "map": metrics["map"].item(),
             "map_50": metrics["map_50"].item(),

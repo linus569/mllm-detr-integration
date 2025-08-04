@@ -13,6 +13,7 @@ train: true
 evaluate: true
 eval_mode: val
 
+image_token: <image> 
 
 
 hydra:

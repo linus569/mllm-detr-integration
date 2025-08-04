@@ -1,0 +1,7 @@
+name: siglip
+model_path: null  # Uses the one from LLaVA model
+image_size: [384, 384]
+mean: [0.5, 0.5, 0.5] 
+std: [0.5, 0.5, 0.5]  
+num_image_tokens: 729  # 27x27 patches = 729
+interpolation: 2 # bicubic

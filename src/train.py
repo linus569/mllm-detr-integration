@@ -2,31 +2,38 @@ import logging
 import os
 import time
 
+from dataset.processor import Processor
+from dataset.processor_fasterrcnn import FastRCNNProcessor
+from model.fastrcnn_adapter import FastRCNNAdapter
+from utils.config import ExperimentConfig
+
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+import torch
+
+# fix graph breaks in detr loss
+torch._dynamo.config.capture_scalar_outputs = True
+# Set TensorFloat32 precision for better performance
+torch.set_float32_matmul_precision("high")
 
 import hydra
 import numpy as np
-import torch
-import wandb
 from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig, OmegaConf
 from torch import autocast
 from torch.amp import GradScaler
 from torch.optim import AdamW
-from torchmetrics.detection.mean_ap import MeanAveragePrecision
 from tqdm import tqdm
 from transformers import get_scheduler
 
-from dataset.dataset import DatasetConfig
+import wandb
 from model.model import VisionLanguageModel
+from utils.config import DatasetConfig
 from utils.train_metrics import TrainMetrics
 from utils.train_utils import (
-    ExperimentConfig,
     JSONStoppingCriteria,
     build_train_dataloader,
     build_val_dataloader,
-    parse_model_output_to_boxes,
-    unnormalize_bbox,
 )
 
 hydra.verbose = True
@@ -36,13 +43,15 @@ log = logging.getLogger(__name__)
 class Trainer:
     def __init__(
         self,
-        model,
-        config,
-        device,
+        model: VisionLanguageModel,
+        processor: Processor,
+        config: ExperimentConfig,
+        device: torch.device,
     ):
         self.model = model
         self.config = config
         self.device = device
+        self.processor = processor
 
         self.train_dataloader = None
         self.val_dataloader = None
@@ -51,7 +60,6 @@ class Trainer:
 
         self.checkpoint_dir = config.checkpoint_dir
         self.gradient_accumulation_steps = config.total_batch_size // config.batch_size
-        self.max_grad_norm = config.max_grad_norm
 
         # Initialize metric once
         self.metric = TrainMetrics(device)
@@ -60,6 +68,10 @@ class Trainer:
         self.scaler = GradScaler(
             "cuda" if torch.cuda.is_available() else "cpu", enabled=self.config.use_amp
         )
+
+        self.dtype = None
+        if self.config.torch_dtype is not None:
+            self.dtype = getattr(torch, self.config.torch_dtype, None)
 
         os.makedirs(self.checkpoint_dir, exist_ok=True)
 
@@ -71,6 +83,17 @@ class Trainer:
             or self.scheduler == None
         ):
             self.lazy_init_training_objects()
+
+        # verify that trainable embedding layers are not frozen
+        count = 0
+        for name, param in self.model.named_parameters():
+            if "trainable_lm_head" in name:
+                count += param.numel()
+                assert param.requires_grad, f"Embedding layer {name} is frozen"
+            if "trainable_embedding" in name:
+                count += param.numel()
+                assert param.requires_grad, f"Embedding layer {name} is frozen"
+        log.info(f"Trainable embedding layers: {count}")
 
         if num_epochs == None:
             num_epochs = self.config.epochs
@@ -91,23 +114,49 @@ class Trainer:
             ),
             desc=f"Train/Epoch 0/{num_epochs}",
             # position=0,
-            # leave=True,
+            leave=False,
         )
+
+        self.model.train()
 
         # Train loop
         for epoch in range(num_epochs):
             progress_bar.set_description(f"Train/Epoch {epoch+1}/{num_epochs}")
 
             for batch in self.train_dataloader:
-                # Move batch to device
+                # Move batch to device # TODO: move this to model in own function
                 input_ids = batch["input_ids"].to(self.device)
                 attention_mask = batch["attention_mask"].to(self.device)
-                images = batch["images"].to(self.device)
                 labels = batch["labels"].to(self.device)
+                if self.config.use_precompute:
+                    images = batch["image_features"].to(self.device)
+                else:
+                    images = batch["images"].to(self.device)
+                detr_labels = None
+                if self.config.detr_loss:
+                    detr_labels = batch["detr_labels"]
+                    for l in detr_labels:
+                        l["class_labels"] = l["class_labels"].to(self.device)
+                        l["boxes"] = l["boxes"].to(self.device)
+
+                image_sizes = batch["image_sizes"]
+                pixel_values = batch["images"]
+
+                if "fasterrcnn" in self.config.model_name:
+                    labels = self.processor.postprocess_target_batch(
+                        batch=batch, device=self.device
+                    )
 
                 # Forward pass
                 outputs = self.train_step(
-                    step, input_ids, attention_mask, images, labels
+                    step,
+                    input_ids,
+                    attention_mask,
+                    images,
+                    labels,
+                    image_sizes,
+                    detr_labels,
+                    pixel_values,
                 )
 
                 total_loss += outputs.loss.item()
@@ -127,6 +176,52 @@ class Trainer:
                         step=step,
                     )
 
+                    if False and outputs.logits is not None:
+                        # get masked logits
+                        mask = batch["labels"] != -100
+                        logits_masked = outputs.logits[mask]
+
+                        # log num of added tokens in labels
+                        try:
+                            logits_masked_max_index = (
+                                logits_masked.argmax(dim=-1).cpu().numpy()
+                            )
+                            wandb.log(
+                                {
+                                    "debug/num_added_tokens_in_labels": np.count_nonzero(
+                                        np.array(labels.cpu() > 151646)
+                                    ),
+                                    "debug/num_added_tokens_in_logits": np.count_nonzero(
+                                        np.array(logits_masked_max_index > 151646)
+                                    ),
+                                },
+                                step=step,
+                            )
+
+                            # log logits
+                            wandb.log(
+                                {
+                                    # print("annotation tag logit:", logits_masked[0][annotation_tag], "; max logit:", logits_masked[0].max(), " ; max logit index:", logits_masked[0].argmax(), " ; max decoded:", tokenizer.decode(logits_masked[0].argmax()))
+                                    "debug/logits_0_max_value": logits_masked[0]
+                                    .max()
+                                    .cpu()
+                                    .item(),
+                                    "debug/logits_0_max_index": logits_masked[0]
+                                    .argmax()
+                                    .cpu()
+                                    .item(),
+                                    "debug/logits_0_max_decoded": self.processor.tokenizer.decode(
+                                        logits_masked[0, 0].argmax().cpu().item()
+                                    ),
+                                    "debug/logits_ann_tag_value": logits_masked[
+                                        0, 151653
+                                    ],
+                                },
+                                step=step,
+                            )
+                        except Exception as e:
+                            log.warning(f"Error logging debug metrics: {e}")
+
                 # Validate
                 if step % self.config.val_freq == 0:
                     val_metrics = self.evaluate(step)
@@ -136,8 +231,8 @@ class Trainer:
                     if is_best:
                         best_map = val_metrics["map"]
 
-                    # save model projection layer after each epoch with current timestamp and epoch
-                    self.save_checkpoint(epoch, val_metrics, is_best)
+                    # TODO: save model projection layer after each epoch with current timestamp and epoch
+                    # self.save_checkpoint(epoch, val_metrics, is_best)
 
                     # progress_bar.refresh()
                     progress_bar.reset()
@@ -151,10 +246,20 @@ class Trainer:
 
         return best_map
 
-    def train_step(self, step, input_ids, attention_mask, images, labels):
+    def train_step(
+        self,
+        step,
+        input_ids,
+        attention_mask,
+        images,
+        labels,
+        image_sizes=None,
+        detr_labels=None,
+        pixel_values=None,
+    ):
         with autocast(
             device_type=self.device.type,
-            dtype=self.model.torch_dtype,  # torch.bfloat16, more stable than float16
+            dtype=self.dtype,  # self.model.torch_dtype,  # torch.bfloat16, more stable than float16
             enabled=self.config.use_amp,
         ):
             outputs = self.model(
@@ -162,9 +267,13 @@ class Trainer:
                 attention_mask=attention_mask,
                 images=images,
                 labels=labels,
+                image_sizes=image_sizes,
+                tokenizer=self.processor.tokenizer,
+                detr_labels=detr_labels,
+                pixel_values=pixel_values,  # for image_processor in full_detr
             )
         loss = outputs.loss / self.gradient_accumulation_steps
-        
+
         if torch.isnan(loss):
             log.warning("NaN loss detected, skipping backward pass")
             return outputs
@@ -173,10 +282,10 @@ class Trainer:
 
         if (step + 1) % self.gradient_accumulation_steps == 0:
             # unscale gradients
-            if self.max_grad_norm is not None:  # grad_clip_norm
+            if self.config.max_grad_norm is not None:  # grad_clip_norm
                 self.scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(), self.max_grad_norm
+                    self.model.parameters(), self.config.max_grad_norm
                 )
 
             self.scaler.step(self.optimizer)
@@ -199,7 +308,7 @@ class Trainer:
         if full_eval:
             val_dataloader = build_val_dataloader(
                 config=self.config,
-                model=self.model,
+                processor=self.processor,
                 subset_size=None,
             )
         else:
@@ -210,50 +319,53 @@ class Trainer:
         self.metric.reset()
 
         progress_bar = tqdm(
-            val_dataloader, desc=f"Eval/Step {step}"
+            val_dataloader, desc=f"Eval/Step {step}", leave=False, position=1
         )  # , leave=False)#, position=1, leave=True)
 
         for batch in progress_bar:
             # Generate predictions
             with autocast(
                 device_type=self.device.type,
-                dtype=self.model.torch_dtype,
+                dtype=self.dtype,
                 enabled=self.config.use_amp,
             ):
+                if self.config.use_precompute:
+                    images = batch["image_features"].to(self.device)
+                else:
+                    images = batch["images"].to(self.device)
+
                 outputs = self.model.generate(
                     input_ids=batch["input_ids"].to(self.device),
                     attention_mask=batch["attention_mask"].to(self.device),
-                    image=batch["images"].to(self.device),
-                    stopping_criteria=[JSONStoppingCriteria(self.model.tokenizer)],
-                    do_sample=True, # TODO: hardcoded to config
+                    # not .to(device) as fasterrcnn returns list, done in model
+                    image=images,
+                    stopping_criteria=[JSONStoppingCriteria(self.processor.tokenizer)],
+                    do_sample=True,  # TODO: hardcoded to config
                     temperature=self.config.temperature,
                     top_p=0.9,
                     top_k=50,
+                    image_sizes=batch["image_sizes"],
+                    pixel_values=batch["images"],  # for image_processor in full_detr
+                    tokenizer=self.processor.tokenizer,
                 )
 
-            # Decode predictions
-            generated_text = self.model.tokenizer.batch_decode(
-                outputs, skip_special_tokens=True
-            )
-
-            # Parse model ouput to bbox and lables
-            predicted_boxes = parse_model_output_to_boxes(
-                generated_text, val_dataloader.dataset, self.device
-            )
-
-            target_boxes = [
-                {
-                    "boxes": unnormalize_bbox(
-                        boxes.to(self.device),
-                        self.model.image_size,
-                        self.model.image_size,
-                    ),
-                    "labels": labels.to(self.device),
-                }
-                for boxes, labels in zip(
-                    batch["instance_bboxes"], batch["instance_classes_id"]
+            if "fasterrcnn" in self.config.model_name:
+                predicted_boxes = outputs
+                generated_text = None
+            elif self.config.detr_loss and not self.config.feedback_detr_to_llm:
+                predicted_boxes = self.processor.postprocess_detr_pred_batch(
+                    outputs, batch["image_sizes"]
                 )
-            ]
+                generated_text = None
+            else:
+                # Parse model ouput to bbox and lables
+                generated_text, predicted_boxes = self.processor.postprocess_xml_batch(
+                    outputs, val_dataloader.dataset, self.device, batch["image_sizes"]
+                )
+
+            target_boxes = self.processor.postprocess_target_batch(
+                batch=batch, device=self.device
+            )
 
             # Update metrics
             self.metric.update(
@@ -262,6 +374,7 @@ class Trainer:
                 generated_text=generated_text,
                 target_texts=batch["bbox_str"],
             )
+            # print(self.metric.compute())
 
         # progress_bar.clear()
         progress_bar.close()
@@ -269,14 +382,13 @@ class Trainer:
 
         # Compute final metrics
         val_metrics = self.metric.compute()
-        log.info(val_metrics)
         wandb.log({**{f"val/{k}": v for k, v in val_metrics.items()}}, step=step)
         return val_metrics
 
     def save_checkpoint(self, epoch, metrics, is_best=False, is_last=False):
         checkpoint = {
             "epoch": epoch,
-            "model_state_dict": self.model.projector.state_dict(),
+            "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "scheduler_state_dict": self.scheduler.state_dict(),
             "metrics": metrics,
@@ -286,16 +398,21 @@ class Trainer:
         # TODO: update best values in wandb
 
         checkpoint_path = os.path.join(
-            self.checkpoint_dir, f"checkpoint_{epoch}_{wandb.run.name}_{int(time.time())}.pt"
+            self.checkpoint_dir,
+            f"checkpoint_{epoch}_{wandb.run.name}_{int(time.time())}.pt",
         )
         torch.save(checkpoint, checkpoint_path)
 
         if is_best:
-            best_path = os.path.join(self.checkpoint_dir, "best_model_{wandb.run.name}.pt")
+            best_path = os.path.join(
+                self.checkpoint_dir, f"best_model_{wandb.run.name}.pt"
+            )
             torch.save(checkpoint, best_path)
-        
+
         if is_last:
-            last_path = os.path.join(self.checkpoint_dir, f"last_model_{wandb.run.name}.pt")
+            last_path = os.path.join(
+                self.checkpoint_dir, f"last_model_{wandb.run.name}.pt"
+            )
             torch.save(checkpoint, last_path)
 
         # _cleanup_old_checkpoints() # TODO: enable
@@ -311,35 +428,62 @@ class Trainer:
         # Create dataloader
         self.train_dataloader = build_train_dataloader(
             config=self.config,
-            model=self.model,
+            processor=self.processor,
             subset_size=self.config.num_samples,
         )
         self.val_dataloader = build_val_dataloader(
             config=self.config,
-            model=self.model,
+            processor=self.processor,
             subset_size=self.config.val_num_samples,
         )
         epochs = self.config.epochs
 
-        # Freeze all layers except projection layer and new token embeddings
-        for param in self.model.parameters():
-            param.requires_grad = False
+        # Create optimizer, different lr for projection layer and frozen embedding layers
+        # Group parameters by learning rate
+        projection_params = []
+        frozen_params = []
+        other_params = []
 
-        # Unfreeze projection layer
-        for param in self.model.projector.parameters():
-            param.requires_grad = True
+        for name, param in self.model.named_parameters():
+            if not param.requires_grad:
+                continue
+            elif "projector" in name:
+                projection_params.append(param)
+            elif "embedding" in name or "lm_head" in name:
+                frozen_params.append(param)
+            else:
+                other_params.append(param)
 
-        trainable_params = [{"params": self.model.projector.parameters()}]
-        self.optimizer = AdamW(trainable_params, lr=self.config.lr)
-
-        num_training_steps = (
-            len(self.train_dataloader) * epochs // self.gradient_accumulation_steps
+        params = [p for p in self.model.parameters() if p.requires_grad]
+        log.info(f"Number of trainable parameters: {sum(p.numel() for p in params)}")
+        log.info(
+            f"Projection params: {sum(p.numel() for p in projection_params)}, Embedding params: {sum(p.numel() for p in frozen_params)}, Other params: {sum(p.numel() for p in other_params)}"
         )
+
+        # Create parameter groups with different learning rates
+        param_groups = [
+            {"params": projection_params, "lr": self.config.lr},
+            {"params": frozen_params, "lr": self.config.lr},  # *0.1
+            {"params": other_params, "lr": self.config.lr},
+        ]
+
+        # TODO: add weight_decay to conf
+        self.optimizer = AdamW(param_groups, lr=self.config.lr)
+
+        # Create lr scheduler
+        num_training_steps = len(self.train_dataloader) * epochs
+        if self.gradient_accumulation_steps > 1:
+            num_training_steps = num_training_steps // self.gradient_accumulation_steps
+        warmup_steps = num_training_steps * self.config.warmup_ratio
         self.scheduler = get_scheduler(
             "cosine",
             optimizer=self.optimizer,
-            num_warmup_steps=num_training_steps * self.config.warmup_ratio,
+            num_warmup_steps=warmup_steps,
             num_training_steps=num_training_steps,
+        )
+
+        log.info(
+            f"LR scheduler with {num_training_steps} training steps and warmup {warmup_steps}"
         )
         log.info(f"Training objects initialized")
 
@@ -364,13 +508,51 @@ def run_training(config: ExperimentConfig):
     device = torch.device("cuda" if torch.cuda.is_available() else config.device)
     log.info(f"Using device: {device}")
 
-    model = VisionLanguageModel(model_name=config.model_name, config=config).to(device)
+    if "fasterrcnn" in config.model_name:
+        processor = FastRCNNProcessor.from_config(config)
+        model = FastRCNNAdapter(config)
+    else:
+        processor = Processor.from_config(
+            config, add_special_tokens=config.add_special_tokens
+        )
+        model = VisionLanguageModel(
+            config=config,
+            image_token_index=processor.image_token_index,
+            num_new_tokens=(
+                len(processor.special_tokens) if config.add_special_tokens else 0
+            ),
+            tokenizer_size=processor.loaded_tokenizer_len,
+            initializers=(
+                processor.special_tokens_initializer
+                if config.add_special_tokens
+                else None
+            ),
+            do_init=config.add_special_tokens,
+            # TODO: fix, 00 is hardcoded
+            query_tokens_id=(
+                processor.tokenizer.encode("<query00/>")
+                if config.num_query_tokens > 0
+                else None
+            ),
+        ).to(device)
+
+    if config.load_checkpoint:
+        path = os.path.join(config.checkpoint_dir, config.load_checkpoint)
+        checkpoint = torch.load(path, map_location=device)
+        missing_keys, unexpected_keys = model.load_state_dict(
+            checkpoint["model_state_dict"]
+        )
+        log.info(
+            f"Loaded checkpoint from {path}. Missing keys: {missing_keys}, Unexpected keys: {unexpected_keys}"
+        )
+
     if not config.debug:
         model = torch.compile(model)  # 2.3 it/s without -> 4.5 it/s with
 
     # Initialize trainer
     trainer = Trainer(
         model=model,
+        processor=processor,
         config=config,
         device=device,
     )

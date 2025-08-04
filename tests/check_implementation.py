@@ -1,24 +1,23 @@
-import sys
 import os
+import sys
 
 import torch
-from llava.mm_utils import process_images
-from tqdm import tqdm
-from transformers import AutoTokenizer
 from hydra import compose, initialize
 from hydra.core.config_store import ConfigStore
+from llava.mm_utils import process_images
 from omegaconf import OmegaConf
+from tqdm import tqdm
+from transformers import AutoTokenizer
 
-
+from utils.config import ExperimentConfig
 
 # Add the src directory to the Python path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from dataset.dataset import DatasetConfig
 from dataset.processor import Processor
 from model.model import VisionLanguageModel
-from utils.train_utils import ExperimentConfig, build_train_dataloader
-
+from utils.config import DatasetConfig
+from utils.train_utils import build_train_dataloader
 
 OmegaConf.register_new_resolver(
     "ifel", lambda flag, val_true, val_false: val_true if flag else val_false
@@ -37,7 +36,6 @@ def config():
             overrides=["+experiment=train_local_test", "main_dir='.'"],
         )
         return config
-
 
 
 def process_image_patches(model, images):
@@ -62,7 +60,7 @@ def process_image_patches(model, images):
     return features
 
 
-def test_dataset_processor_model():
+def test_dataset_processor_model(config):
     # test implementation of dataset, processor, and integration with model
     train_data_dir = "data/coco/images/train2017"
     train_annotation_file = "data/coco/annotations/instances_train2017.json"
@@ -70,11 +68,11 @@ def test_dataset_processor_model():
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-    model = VisionLanguageModel(model_name)
+    model = VisionLanguageModel(config=config)
     # print(model)
     print(model.model.config)
     print(model.image_encoder.config)
-    print(model.image_size)
+    # print(model.image_size) # image_size moved from model to processor
 
     # print("projector model", model.text_encoder.projector)
     # print("projector", model.projector)
@@ -138,9 +136,8 @@ def test_token_size(config):
     config.max_tokens = None
     config.pad_to_multiple_of = None
 
-    model = VisionLanguageModel(model_name, config)
+    model = VisionLanguageModel(config=config)
     dataloader = build_train_dataloader(config, model)
-
 
     token_sizes = []
     for batch in tqdm(dataloader, desc="Processing batches"):
