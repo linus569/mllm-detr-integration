@@ -8,6 +8,7 @@ outputs/
 debug_logs/
 logs/
 .DS_Store
+inference/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

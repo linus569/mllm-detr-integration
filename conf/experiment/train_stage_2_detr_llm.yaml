@@ -42,3 +42,4 @@ freeze_model: false
 detr_loss: True
 num_query_tokens: 20
 add_detr_layers: true
+load_checkpoint: 'last_model_XXX'
