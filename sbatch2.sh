@@ -15,8 +15,8 @@ cat > "$TMP_SCRIPT" << EOL
 #SBATCH --mail-type=ALL
 #SBATCH --partition=universe
 #SBATCH --qos=master-queuesave
-#SBATCH --time=0-24:00:00
-#SBATCH --gres=gpu:1
+#SBATCH --time=0-100:00:00 # 100:00:00, 48, 150:
+#SBATCH --gres=gpu:1 # :a100:
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=48G
 
@@ -28,13 +28,19 @@ conda init
 
 # Activate corresponding environment
 #conda deactivate
-source activate vlm-detection2
+source activate vlm-detection-new
 conda list
 
 # cache to /tmp with rsync
+# rsync --progress precomputed_img_siglip_bs2_bfloat16.hdf5 /tmp/precomputed_img_siglip_bs2_bfloat16.hdf5 # not faster, even slower
+# catch precomputed data file precomputed_img_siglip_bs2_bfloat16.hdf5
+# rsync --progress precomputed_img_siglip_bs2_bfloat16.hdf5 /tmp/precomputed_img_siglip_bs2_bfloat16.hdf5
 
 # Run the program with remaining arguments
-python src/train.py +experiment=train_finetune_projection $@
+# python src/precompute.py +experiment=train_finetune_projection $@
+python src/train.py +experiment=train_full $@
+# python src/train.py +experiment=train_stage_1_detr $@
+# python src/train.py +experiment=train_stage_2_detr_llm $@
 EOL
 
 # Submit the job

@@ -28,13 +28,15 @@ conda init
 
 # Activate corresponding environment
 #conda deactivate
-source activate vlm-detection2
+source activate vlm-detection-new
 conda list
 
 # cache to /tmp with rsync
 
 # Run the program with remaining arguments
-python src/train.py +experiment=train_finetune_projection $@
+# python src/precompute.py +experiment=train_finetune_projection $@
+python src/train.py +experiment=train_stage_1_detr $@
+# python src/train.py +experiment=train_stage_2_detr_llm $@
 EOL
 
 # Submit the job
