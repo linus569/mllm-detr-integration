@@ -279,16 +279,15 @@ class VisionLanguageModel(torch.nn.Module):
                 [k.startswith("_orig_mod.") for k in state_dict.keys()]
             ), "State dict should be from torch compile"
             state_dict = {k[len("_orig_mod.") :]: v for k, v in state_dict.items()}
-
-        components = {
-            "projector": self.projector,
-            "input_embeddings": self.model.get_input_embeddings(),
-            "output_embeddings": self.model.get_output_embeddings(),
-        }
+        components = {}
 
         if any(k.startswith("llm.") for k in state_dict.keys()):
             # log.info("Loading llm component to dict")
             components["llm"] = self.model
+
+        components["projector"] = self.projector
+        components["input_embeddings"] = self.model.get_input_embeddings()
+        components["output_embeddings"] = self.model.get_output_embeddings()
 
         if hasattr(self, "detr_integration") and any(
             k.startswith("detr_integration.") for k in state_dict.keys()
@@ -781,8 +780,7 @@ class VisionLanguageModel(torch.nn.Module):
                 scores, labels_pred = prob[..., :-1].max(-1)
 
                 # filter scores above threshold, get indices and create mask
-                threshold = 0.5
-                mask = scores > threshold
+                mask = scores > self.config.feedback_threshold
                 indices = mask.nonzero()
                 # get a list of indices for each batch
                 indices = [

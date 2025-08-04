@@ -112,6 +112,7 @@ class ExperimentConfig:
     precompute_batch_size: Optional[int] = None
 
     feedback_detr_to_llm: bool = False
+    feedback_threshold: float = 0.5
     remove_query_tokens: bool = False
 
     lora: bool = False
@@ -120,5 +121,6 @@ class ExperimentConfig:
     lora_dropout: float = 0.05
     lora_target_modules: Optional[List[str]] = field(
         default_factory=lambda: ["q_proj", "v_proj"]
-    )
+    ) # ["gate_proj", "down_proj", "up_proj", "q_proj", "v_proj", "k_proj", "o_proj" ] 
+
 
